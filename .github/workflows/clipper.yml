@@ -9,7 +9,7 @@ jobs:
   clip:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit the finished clip back
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -50,7 +50,7 @@ jobs:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
         run: python -m agents.publisher
-        continue-on-error: true   # don't fail the workflow if posting fails
+        continue-on-error: true
 
       - name: Commit processed moments + clip
         run: |
