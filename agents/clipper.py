@@ -3,11 +3,8 @@ agents/clipper.py — Agent 2: Clipper
 
 Runs inside a GitHub Actions workflow (NOT on PythonAnywhere).
 Records a live segment from a Kick stream using streamlink,
-crops to 9:16, adds captions, and saves to output/clips/.
-
-The workflow triggers when the Scout pushes a new hype moment.
-Because we're clipping LIVE, the moment must still be within the
-current stream when this runs (usually within 1-2 minutes of detection).
+uses Claude vision to detect webcam position, then composites
+a 9:16 vertical clip with cam on top (40%) and content on bottom (60%).
 """
 import json
 import logging
@@ -15,6 +12,7 @@ import subprocess
 import sys
 import os
 import shutil
+import base64
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +27,7 @@ CLIPS_DIR = Path("output/clips")
 MOMENTS_FILE = Path("output/pending_moments.jsonl")
 PROCESSED_FILE = Path("output/processed_moments.jsonl")
 DURATION = int(os.getenv("CLIP_PADDING_BEFORE", 20)) + int(os.getenv("CLIP_PADDING_AFTER", 10))
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 # =============================================================================
@@ -63,10 +62,6 @@ def mark_processed(moment: dict, lines: list[str]):
 # =============================================================================
 
 def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
-    """
-    Record `duration` seconds from a live Kick stream using streamlink.
-    streamlink's Kick plugin uses cloudscraper internally — bypasses Cloudflare.
-    """
     log.info(f"Recording {duration}s from kick.com/{channel} via streamlink...")
 
     cmd = [
@@ -80,22 +75,18 @@ def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
     ]
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=duration + 60
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=duration + 60)
     except subprocess.TimeoutExpired:
         log.warning("streamlink timed out — checking if partial file is usable")
+        result = subprocess.CompletedProcess(cmd, 1, "", "timeout")
 
     if not output_path.exists():
-        log.error(f"No output file created. streamlink stderr: {result.stderr[-600:]}")
+        log.error(f"No output file. stderr: {result.stderr[-600:]}")
         return False
 
     size = output_path.stat().st_size
     if size < 50_000:
-        log.error(f"Output file too small ({size} bytes) — likely failed")
+        log.error(f"Output too small ({size} bytes)")
         return False
 
     log.info(f"Recorded {size/1024/1024:.1f}MB -> {output_path}")
@@ -103,41 +94,192 @@ def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
 
 
 # =============================================================================
-# Step 2 — Crop to 9:16 vertical
+# Step 2 — Detect webcam position with Claude vision
 # =============================================================================
 
-def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
-    log.info("Cropping to 9:16 vertical...")
+def extract_frame(video_path: Path, frame_path: Path) -> bool:
+    """Extract the first frame of the video as a JPEG."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vframes", "1",
+        "-q:v", "2",
+        str(frame_path)
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.returncode == 0 and frame_path.exists()
 
+
+def detect_webcam(frame_path: Path, video_w: int, video_h: int) -> dict | None:
+    """
+    Send the first frame to Claude vision and ask it to identify
+    the webcam/facecam bounding box.
+
+    Returns a dict with keys: x, y, w, h (in pixels)
+    or None if no webcam detected.
+    """
+    if not ANTHROPIC_API_KEY:
+        log.warning("No ANTHROPIC_API_KEY — skipping webcam detection, using fullscreen crop")
+        return None
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        with open(frame_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": image_data,
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": f"""This is a frame from a live stream. The full resolution is {video_w}x{video_h} pixels.
+
+Identify the streamer's webcam/facecam rectangle if one exists.
+
+Respond ONLY with a JSON object — no explanation, no markdown:
+{{"has_webcam": true, "x": 0, "y": 0, "w": 320, "h": 240}}
+
+Where x, y, w, h are pixel coordinates of the webcam in the full {video_w}x{video_h} frame.
+If there is no visible webcam/facecam, respond with:
+{{"has_webcam": false}}"""
+                    }
+                ]
+            }]
+        )
+
+        text = response.content[0].text.strip()
+        # Strip any accidental markdown
+        text = text.replace("```json", "").replace("```", "").strip()
+        result = json.loads(text)
+
+        if not result.get("has_webcam"):
+            log.info("Claude: no webcam detected — will use fullscreen crop")
+            return None
+
+        cam = {
+            "x": int(result["x"]),
+            "y": int(result["y"]),
+            "w": int(result["w"]),
+            "h": int(result["h"]),
+        }
+        log.info(f"Claude detected webcam at x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
+        return cam
+
+    except Exception as e:
+        log.warning(f"Webcam detection failed: {e} — falling back to fullscreen crop")
+        return None
+
+
+# =============================================================================
+# Step 3 — Composite 9:16 layout
+# =============================================================================
+
+def get_video_dimensions(video_path: Path) -> tuple[int, int]:
     probe = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(input_path)],
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(video_path)],
         capture_output=True, text=True
     )
     streams = json.loads(probe.stdout).get("streams", [])
     video = next((s for s in streams if s["codec_type"] == "video"), None)
     if not video:
-        log.error("Could not read video dimensions")
-        return False
+        return 1920, 1080
+    return int(video["width"]), int(video["height"])
 
-    w = int(video["width"])
-    h = int(video["height"])
-    target_w = int(h * 9 / 16)
-    crop_x = (w - target_w) // 2
 
-    log.info(f"Source: {w}x{h} -> cropped to {target_w}x{h}")
+def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
+    """
+    Build a 9:16 vertical clip:
+    - Top 40%: streamer webcam (detected by Claude vision)
+    - Bottom 60%: game/content (centre crop of source)
+    - Falls back to simple centre crop if no webcam found
+    """
+    w, h = get_video_dimensions(input_path)
+    log.info(f"Source dimensions: {w}x{h}")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(input_path),
-        "-vf", f"crop={target_w}:{h}:{crop_x}:0",
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        "-preset", "fast",
-        str(output_path)
-    ]
+    # Output canvas: 9:16 at 1080p = 608x1080 (rounded to even)
+    out_w = 608
+    out_h = 1080
+    cam_h = int(out_h * 0.40)    # 432px — top 40%
+    content_h = out_h - cam_h    # 648px — bottom 60%
+
+    # Extract first frame for Claude
+    frame_path = input_path.with_suffix(".jpg")
+    has_frame = extract_frame(input_path, frame_path)
+
+    cam = None
+    if has_frame:
+        cam = detect_webcam(frame_path, w, h)
+        frame_path.unlink(missing_ok=True)
+
+    if cam:
+        # === Layout: cam top 40%, content bottom 60% ===
+        log.info("Building 40/60 cam+content layout...")
+
+        # Scale cam to fill top section (out_w wide, cam_h tall)
+        # Scale content centre crop to fill bottom section
+        content_crop_w = int(h * out_w / content_h)
+        content_crop_x = max(0, (w - content_crop_w) // 2)
+
+        vf = (
+            # Scale source to two streams
+            f"[0:v]split=2[cam_src][content_src];"
+
+            # Top: crop webcam area, scale to out_w x cam_h
+            f"[cam_src]crop={cam['w']}:{cam['h']}:{cam['x']}:{cam['y']},"
+            f"scale={out_w}:{cam_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{cam_h}:(ow-iw)/2:(oh-ih)/2[cam_out];"
+
+            # Bottom: centre crop content, scale to out_w x content_h
+            f"[content_src]crop={content_crop_w}:{h}:{content_crop_x}:0,"
+            f"scale={out_w}:{content_h}[content_out];"
+
+            # Stack vertically
+            f"[cam_out][content_out]vstack=inputs=2[out]"
+        )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-filter_complex", vf,
+            "-map", "[out]",
+            "-map", "0:a",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-preset", "fast",
+            str(output_path)
+        ]
+    else:
+        # === Fallback: simple centre crop to 9:16 ===
+        log.info("No webcam — using fullscreen centre crop...")
+        target_w = int(h * 9 / 16)
+        crop_x = (w - target_w) // 2
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-vf", f"crop={target_w}:{h}:{crop_x}:0,scale={out_w}:{out_h}",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-preset", "fast",
+            str(output_path)
+        ]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        log.error(f"Crop failed: {result.stderr[-500:]}")
+        log.error(f"ffmpeg crop failed: {result.stderr[-500:]}")
         return False
 
     log.info(f"Cropped: {output_path}")
@@ -145,7 +287,7 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 
 
 # =============================================================================
-# Step 3 — Add captions with Whisper
+# Step 4 — Add captions with Whisper
 # =============================================================================
 
 def add_captions(input_path: Path, output_path: Path) -> bool:
@@ -194,7 +336,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         shutil.copy(input_path, output_path)
 
     srt_path.unlink(missing_ok=True)
-    log.info(f"Final clip: {output_path}")
+    log.info(f"Final clip with captions: {output_path}")
     return True
 
 
