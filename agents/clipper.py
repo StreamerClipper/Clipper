@@ -59,12 +59,8 @@ def mark_processed(moment: dict, lines: list[str]):
         f.write(json.dumps(moment) + "\n")
 
 
-def get_kick_vod_url(stream_id: str) -> str:
-    """
-    Build the yt-dlp compatible URL for a Kick VOD.
-    yt-dlp supports kick.com natively as of 2024.
-    """
-    return f"https://kick.com/video/{stream_id}"
+def get_kick_vod_url(channel: str, stream_id: str) -> str:
+    return f"https://kick.com/{channel}/videos/{stream_id}"
 
 
 def download_segment(vod_url: str, start: float, duration: float, output_path: Path) -> bool:
@@ -77,12 +73,11 @@ def download_segment(vod_url: str, start: float, duration: float, output_path: P
     # Get the direct URL without downloading
     result = subprocess.run(
         [
-        "yt-dlp",
-        "--get-url",
-        "--format", "best[ext=mp4]/best",
-        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "--add-header", "Referer:https://kick.com",
-        vod_url,
+            "yt-dlp",
+            "--get-url",
+            "--format", "best[ext=mp4]/best",
+            "--impersonate", "chrome",
+            vod_url,
         ],
         capture_output=True, text=True
     )
@@ -238,7 +233,7 @@ def process_moment(moment: dict) -> Path | None:
     cropped = tmp / f"{slug}_cropped.mp4"
     final = CLIPS_DIR / f"{slug}_final.mp4"
 
-    vod_url = get_kick_vod_url(stream_id)
+    vod_url = get_kick_vod_url(channel, stream_id)
 
     if not download_segment(vod_url, start, duration, raw):
         return None
