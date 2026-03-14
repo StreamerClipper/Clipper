@@ -109,9 +109,20 @@ def extract_frame(video_path: Path, frame_path: Path) -> bool:
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.returncode == 0 and frame_path.exists()
 
+# Per-channel webcam defaults (used when Claude vision fails)
+WEBCAM_DEFAULTS = {
+    "odablock": lambda w, h: {"x": int(w * 0.75), "y": 0, "w": int(w * 0.25), "h": int(h * 0.35)},
+}
 
-def detect_webcam(frame_path: Path, video_w: int, video_h: int) -> dict | None:
-    """
+def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
+    if channel in WEBCAM_DEFAULTS:
+        cam = WEBCAM_DEFAULTS[channel](video_w, video_h)
+        log.info(f"Using default webcam position for #{channel}: {cam}")
+        return cam
+    return None
+
+def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
+"""
     Send the first frame to Claude vision and ask it to identify
     the webcam/facecam bounding box.
 
@@ -178,9 +189,9 @@ If there is no visible webcam/facecam, respond with:
         log.info(f"Claude detected webcam at x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
         return cam
 
-    except Exception as e:
-        log.warning(f"Webcam detection failed: {e} — falling back to fullscreen crop")
-        return None
+     except Exception as e:
+        log.warning(f"Webcam detection failed: {e} — trying channel default")
+        return get_default_webcam(channel, video_w, video_h)
 
 
 # =============================================================================
@@ -199,7 +210,7 @@ def get_video_dimensions(video_path: Path) -> tuple[int, int]:
     return int(video["width"]), int(video["height"])
 
 
-def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
+def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> bool:
     """
     Build a 9:16 vertical clip:
     - Top 40%: streamer webcam (detected by Claude vision)
@@ -221,7 +232,7 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 
     cam = None
     if has_frame:
-        cam = detect_webcam(frame_path, w, h)
+        cam = detect_webcam(frame_path, w, h, channel)
         frame_path.unlink(missing_ok=True)
 
     if cam:
@@ -359,7 +370,7 @@ def process_moment(moment: dict) -> Path | None:
 
     if not record_live_segment(channel, DURATION, raw):
         return None
-    if not crop_to_vertical(raw, cropped):
+    if not crop_to_vertical(raw, cropped, channel):
         return None
     if not add_captions(cropped, final):
         return None
