@@ -1,0 +1,11 @@
+# PythonAnywhere requirements (Scout agent only)
+# Install via: pip install -r requirements.txt
+websockets>=12.0
+aiohttp>=3.9.0
+aiofiles>=23.0.0
+python-dotenv>=1.0.0
+kick.py
+
+# GitHub Actions installs these separately (heavier deps not needed on PythonAnywhere)
+# faster-whisper>=1.0.0
+# anthropic>=0.25.0
