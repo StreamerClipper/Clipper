@@ -2,17 +2,19 @@
 agents/clipper.py — Agent 2: Clipper
 
 Runs inside a GitHub Actions workflow (NOT on PythonAnywhere).
-Reads the latest unprocessed moment from output/pending_moments.jsonl,
-downloads the VOD segment, crops to 9:16, adds captions, and saves
-the finished clip to output/clips/.
+Records a live segment from a Kick stream using streamlink,
+crops to 9:16, adds captions, and saves to output/clips/.
 
-GitHub Actions provides: Python, ffmpeg, yt-dlp, faster-whisper
+The workflow triggers when the Scout pushes a new hype moment.
+Because we're clipping LIVE, the moment must still be within the
+current stream when this runs (usually within 1-2 minutes of detection).
 """
 import json
 import logging
 import subprocess
 import sys
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -26,107 +28,92 @@ logging.basicConfig(
 CLIPS_DIR = Path("output/clips")
 MOMENTS_FILE = Path("output/pending_moments.jsonl")
 PROCESSED_FILE = Path("output/processed_moments.jsonl")
-PADDING_BEFORE = int(os.getenv("CLIP_PADDING_BEFORE", 20))
-PADDING_AFTER = int(os.getenv("CLIP_PADDING_AFTER", 10))
+DURATION = int(os.getenv("CLIP_PADDING_BEFORE", 20)) + int(os.getenv("CLIP_PADDING_AFTER", 10))
 
 
-def load_next_moment() -> dict | None:
-    """Load the oldest unprocessed moment."""
+# =============================================================================
+# Moment queue
+# =============================================================================
+
+def load_next_moment():
     if not MOMENTS_FILE.exists():
-        log.info("No pending_moments.jsonl found — nothing to process")
-        return None
+        log.info("No pending_moments.jsonl — nothing to process")
+        return None, None
 
-    lines = MOMENTS_FILE.read_text().strip().splitlines()
+    lines = [l for l in MOMENTS_FILE.read_text().strip().splitlines() if l.strip()]
     if not lines:
         log.info("pending_moments.jsonl is empty — nothing to process")
-        return None
+        return None, None
 
-    # Take first unprocessed moment
     moment = json.loads(lines[0])
-    log.info(f"Processing moment: {moment['channel']} @ {moment['peak_offset']:.0f}s")
+    log.info(f"Processing: #{moment['channel']} @ {moment['peak_offset']:.0f}s into stream")
     return moment, lines
 
 
 def mark_processed(moment: dict, lines: list[str]):
-    """Move the processed moment out of the pending file."""
-    # Remove first line (the one we just processed)
     remaining = lines[1:]
     MOMENTS_FILE.write_text("\n".join(remaining) + ("\n" if remaining else ""))
-
-    # Append to processed log
     moment["processed_at"] = datetime.utcnow().isoformat()
     with open(PROCESSED_FILE, "a") as f:
         f.write(json.dumps(moment) + "\n")
 
 
-def get_kick_vod_url(channel: str, stream_id: str) -> str:
-    return f"https://kick.com/{channel}/videos/{stream_id}"
+# =============================================================================
+# Step 1 — Record live segment with streamlink
+# =============================================================================
 
-
-def download_segment(vod_url: str, start: float, duration: float, output_path: Path) -> bool:
+def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
     """
-    Download a specific time segment from a Kick VOD using yt-dlp + ffmpeg.
-    Uses yt-dlp to get the direct stream URL, then ffmpeg to cut the segment.
+    Record `duration` seconds from a live Kick stream using streamlink.
+    streamlink's Kick plugin uses cloudscraper internally — bypasses Cloudflare.
     """
-    log.info(f"Fetching VOD stream URL via yt-dlp...")
+    log.info(f"Recording {duration}s from kick.com/{channel} via streamlink...")
 
-    # Get the direct URL without downloading
-    result = subprocess.run(
-        [
-            "yt-dlp",
-            "--get-url",
-            "--format", "best[ext=mp4]/best",
-            "--impersonate", "chrome",
-            vod_url,
-        ],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        log.error(f"yt-dlp failed: {result.stderr}")
-        return False
-
-    stream_url = result.stdout.strip()
-    if not stream_url:
-        log.error("yt-dlp returned empty URL")
-        return False
-
-    log.info(f"Downloading segment: {start:.0f}s → {start + duration:.0f}s")
-
-    # Use ffmpeg to cut the segment directly from the stream URL
     cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(max(0, start)),
-        "-i", stream_url,
-        "-headers", "Referer: https://kick.com\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n",
-        "-t", str(duration),
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        "-preset", "fast",
-        str(output_path)
+        "streamlink",
+        "--output", str(output_path),
+        "--stream-timeout", str(duration + 30),
+        "--stream-segment-timeout", "10",
+        "--hls-duration", str(duration),
+        f"https://kick.com/{channel}",
+        "best",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        log.error(f"ffmpeg segment download failed: {result.stderr[-500:]}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=duration + 60
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("streamlink timed out — checking if partial file is usable")
+
+    if not output_path.exists():
+        log.error(f"No output file created. streamlink stderr: {result.stderr[-600:]}")
         return False
 
-    log.info(f"Segment downloaded: {output_path}")
+    size = output_path.stat().st_size
+    if size < 50_000:
+        log.error(f"Output file too small ({size} bytes) — likely failed")
+        return False
+
+    log.info(f"Recorded {size/1024/1024:.1f}MB -> {output_path}")
     return True
 
 
+# =============================================================================
+# Step 2 — Crop to 9:16 vertical
+# =============================================================================
+
 def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
-    """
-    Crop 16:9 video to 9:16 (vertical) for Shorts/Reels/TikTok.
-    Crops centre of frame — takes the middle third horizontally.
-    """
     log.info("Cropping to 9:16 vertical...")
 
-    # Get video dimensions
     probe = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(input_path)],
         capture_output=True, text=True
     )
-    import json as _json
-    streams = _json.loads(probe.stdout).get("streams", [])
+    streams = json.loads(probe.stdout).get("streams", [])
     video = next((s for s in streams if s["codec_type"] == "video"), None)
     if not video:
         log.error("Could not read video dimensions")
@@ -134,10 +121,10 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 
     w = int(video["width"])
     h = int(video["height"])
-
-    # For 16:9 source: target width = h * 9/16, centred
     target_w = int(h * 9 / 16)
     crop_x = (w - target_w) // 2
+
+    log.info(f"Source: {w}x{h} -> cropped to {target_w}x{h}")
 
     cmd = [
         "ffmpeg", "-y",
@@ -157,43 +144,41 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
     return True
 
 
+# =============================================================================
+# Step 3 — Add captions with Whisper
+# =============================================================================
+
 def add_captions(input_path: Path, output_path: Path) -> bool:
-    """
-    Transcribe audio with faster-whisper and burn subtitles into the video.
-    Falls back to no captions if whisper isn't available.
-    """
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         log.warning("faster-whisper not installed — skipping captions")
-        import shutil
         shutil.copy(input_path, output_path)
         return True
 
-    log.info("Transcribing audio with Whisper (tiny model)...")
+    log.info("Transcribing with Whisper tiny model...")
     srt_path = input_path.with_suffix(".srt")
 
     try:
         model = WhisperModel("tiny", compute_type="int8")
         segments, _ = model.transcribe(str(input_path), beam_size=1)
 
+        def fmt_time(t):
+            h, r = divmod(t, 3600)
+            m, s = divmod(r, 60)
+            ms = int((s % 1) * 1000)
+            return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
+
         with open(srt_path, "w") as f:
             for i, seg in enumerate(segments, 1):
-                def fmt_time(t):
-                    h, r = divmod(t, 3600)
-                    m, s = divmod(r, 60)
-                    ms = int((s % 1) * 1000)
-                    return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
                 f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
 
-        log.info(f"Transcript written: {srt_path}")
+        log.info(f"Captions written: {srt_path}")
     except Exception as e:
-        log.warning(f"Whisper transcription failed: {e} — skipping captions")
-        import shutil
+        log.warning(f"Whisper failed: {e} — skipping captions")
         shutil.copy(input_path, output_path)
         return True
 
-    # Burn subtitles
     cmd = [
         "ffmpeg", "-y",
         "-i", str(input_path),
@@ -205,8 +190,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        log.warning(f"Caption burn failed — using uncaptioned clip: {result.stderr[-300:]}")
-        import shutil
+        log.warning(f"Caption burn failed — using uncaptioned: {result.stderr[-300:]}")
         shutil.copy(input_path, output_path)
 
     srt_path.unlink(missing_ok=True)
@@ -214,35 +198,30 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
     return True
 
 
+# =============================================================================
+# Main pipeline
+# =============================================================================
+
 def process_moment(moment: dict) -> Path | None:
-    """Full pipeline for one moment: download → crop → captions → return path."""
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     tmp = Path("/tmp/clipbot")
     tmp.mkdir(exist_ok=True)
 
     channel = moment["channel"]
-    stream_id = moment["stream_id"]
-    offset = float(moment["peak_offset"])
-    start = max(0, offset - PADDING_BEFORE)
-    duration = PADDING_BEFORE + PADDING_AFTER
-
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     slug = f"{channel}_{timestamp}"
 
-    raw = tmp / f"{slug}_raw.mp4"
+    raw = tmp / f"{slug}_raw.ts"
     cropped = tmp / f"{slug}_cropped.mp4"
     final = CLIPS_DIR / f"{slug}_final.mp4"
 
-    vod_url = get_kick_vod_url(channel, stream_id)
-
-    if not download_segment(vod_url, start, duration, raw):
+    if not record_live_segment(channel, DURATION, raw):
         return None
     if not crop_to_vertical(raw, cropped):
         return None
     if not add_captions(cropped, final):
         return None
 
-    # Clean up temp files
     raw.unlink(missing_ok=True)
     cropped.unlink(missing_ok=True)
 
@@ -251,17 +230,15 @@ def process_moment(moment: dict) -> Path | None:
 
 
 def main():
-    result = load_next_moment()
-    if result is None:
+    moment, lines = load_next_moment()
+    if moment is None:
         sys.exit(0)
 
-    moment, lines = result
     clip_path = process_moment(moment)
 
     if clip_path:
         mark_processed(moment, lines)
         log.info(f"Done — clip saved to {clip_path}")
-        # Write clip path to a file so the Publisher step can find it
         Path("output/latest_clip.txt").write_text(str(clip_path))
     else:
         log.error("Clipping failed — moment left in pending queue for retry")
