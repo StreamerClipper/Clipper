@@ -309,12 +309,16 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         shutil.copy(input_path, output_path)
         return True
 
-    log.info("Transcribing with Whisper tiny model...")
+    log.info("Transcribing with Whisper for word-level captions...")
     srt_path = input_path.with_suffix(".srt")
 
     try:
         model = WhisperModel("tiny", compute_type="int8")
-        segments, _ = model.transcribe(str(input_path), beam_size=1)
+        segments, _ = model.transcribe(
+            str(input_path),
+            beam_size=1,
+            word_timestamps=True  # enables word-by-word timing
+        )
 
         def fmt_time(t):
             h, r = divmod(t, 3600)
@@ -322,20 +326,46 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             ms = int((s % 1) * 1000)
             return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
 
-        with open(srt_path, "w") as f:
-            for i, seg in enumerate(segments, 1):
-                f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{seg.text.strip()}\n\n")
+        # Write one subtitle entry per word
+        entries = []
+        for seg in segments:
+            if hasattr(seg, "words") and seg.words:
+                for word in seg.words:
+                    entries.append((word.start, word.end, word.word.strip().upper()))
+            else:
+                # Fallback to segment level if no word timestamps
+                entries.append((seg.start, seg.end, seg.text.strip().upper()))
 
-        log.info(f"Captions written: {srt_path}")
+        with open(srt_path, "w") as f:
+            for i, (start, end, text) in enumerate(entries, 1):
+                # Add small buffer so words don't disappear too fast
+                end = max(end, start + 0.15)
+                f.write(f"{i}\n{fmt_time(start)} --> {fmt_time(end)}\n{text}\n\n")
+
+        log.info(f"Word-level captions: {len(entries)} words")
+
     except Exception as e:
         log.warning(f"Whisper failed: {e} — skipping captions")
         shutil.copy(input_path, output_path)
         return True
 
+    # Burn with large centred style matching Odablock's YouTube Shorts
     cmd = [
         "ffmpeg", "-y",
         "-i", str(input_path),
-        "-vf", f"subtitles={srt_path}:force_style='FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2'",
+        "-vf", (
+            f"subtitles={srt_path}:force_style='"
+            "FontName=Arial,"
+            "FontSize=22,"
+            "Bold=1,"
+            "PrimaryColour=&H00FFFFFF,"   # white text
+            "OutlineColour=&H00000000,"   # black outline
+            "BackColour=&H00000000,"
+            "Outline=3,"                  # thick outline
+            "Shadow=0,"
+            "Alignment=2,"               # centre bottom
+            "MarginV=80'"                # push up from bottom edge
+        ),
         "-c:v", "libx264",
         "-c:a", "aac",
         "-preset", "fast",
@@ -347,7 +377,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         shutil.copy(input_path, output_path)
 
     srt_path.unlink(missing_ok=True)
-    log.info(f"Final clip with captions: {output_path}")
+    log.info(f"Final clip with word captions: {output_path}")
     return True
 
 
