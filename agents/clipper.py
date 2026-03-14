@@ -371,14 +371,14 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             f"subtitles={srt_path}:force_style='"
             "FontName=Arial,"
             "FontSize=22,"
-            "Bold=1,"
+            "Bold=2,"
             "PrimaryColour=&H00FFFFFF,"   # white text
             "OutlineColour=&H00000000,"   # black outline
             "BackColour=&H00000000,"
             "Outline=3,"                  # thick outline
             "Shadow=0,"
             "Alignment=2,"               # centre bottom
-            "MarginV=80'"                # push up from bottom edge
+            "MarginV=618'"                # push up from bottom edge
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
