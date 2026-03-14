@@ -110,8 +110,24 @@ def extract_frame(video_path: Path, frame_path: Path) -> bool:
     return result.returncode == 0 and frame_path.exists()
 
 # Per-channel webcam defaults (used when Claude vision fails)
+# Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
-    "odablock": lambda w, h: {"x": int(w * 0.75), "y": 0, "w": int(w * 0.25), "h": int(h * 0.35)},
+    "odablock": lambda w, h: {
+        "x": int(w * 0.712),   # starts at ~71% across
+        "y": 0,
+        "w": int(w * 0.288),   # ~29% wide
+        "h": int(h * 0.337),   # ~34% tall
+    },
+}
+
+# Per-channel content crop (the game area to show in the bottom 60%)
+CONTENT_CROP_DEFAULTS = {
+    "odablock": lambda w, h: {
+        "x": 0,
+        "y": 0,
+        "w": int(w * 0.673),   # left 67% = game area
+        "h": int(h * 0.687),   # top 69% = above black bar
+    },
 }
 
 def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
@@ -239,25 +255,23 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
         # === Layout: cam top 40%, content bottom 60% ===
         log.info("Building 40/60 cam+content layout...")
 
-        # Scale cam to fill top section (out_w wide, cam_h tall)
-        # Scale content centre crop to fill bottom section
-        content_crop_w = int(h * out_w / content_h)
-        content_crop_x = max(0, (w - content_crop_w) // 2)
+        # Use channel-specific content crop if available, else centre crop
+        content_def = CONTENT_CROP_DEFAULTS.get(channel)
+        if content_def:
+            cc = content_def(w, h)
+            content_crop = f"crop={cc['w']}:{cc['h']}:{cc['x']}:{cc['y']}"
+        else:
+            content_crop_w = min(w, int(h * out_w / content_h))
+            content_crop_x = max(0, (w - content_crop_w) // 2)
+            content_crop = f"crop={content_crop_w}:{h}:{content_crop_x}:0"
 
         vf = (
-            # Scale source to two streams
             f"[0:v]split=2[cam_src][content_src];"
-
-            # Top: crop webcam area, scale to out_w x cam_h
             f"[cam_src]crop={cam['w']}:{cam['h']}:{cam['x']}:{cam['y']},"
             f"scale={out_w}:{cam_h}:force_original_aspect_ratio=increase,"
             f"crop={out_w}:{cam_h}[cam_out];"
-
-            # Bottom: centre crop content, scale to out_w x content_h
-            f"[content_src]crop={content_crop_w}:{h}:{content_crop_x}:0,"
+            f"[content_src]{content_crop},"
             f"scale={out_w}:{content_h}[content_out];"
-
-            # Stack vertically
             f"[cam_out][content_out]vstack=inputs=2[out]"
         )
 
