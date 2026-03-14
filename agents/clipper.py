@@ -122,7 +122,7 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
     return None
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
-"""
+    """
     Send the first frame to Claude vision and ask it to identify
     the webcam/facecam bounding box.
 
@@ -189,7 +189,7 @@ If there is no visible webcam/facecam, respond with:
         log.info(f"Claude detected webcam at x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
         return cam
 
-     except Exception as e:
+    except Exception as e:
         log.warning(f"Webcam detection failed: {e} — trying channel default")
         return get_default_webcam(channel, video_w, video_h)
 
