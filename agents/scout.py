@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("scout")
 
-KICK_WS_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false"
+KICK_WS_URL = "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false"
 KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 
@@ -130,12 +130,62 @@ class HypeDetector:
             self._timestamps.popleft()
         return len(self._timestamps) / self.window
 
+    # Keywords that indicate a giveaway/spam flood — not genuine hype
+    SPAM_KEYWORDS = {
+        "weeat", "!giveaway", "!enter", "!join", "giveaway",
+        "!claim", "!free", "!drop",
+    }
+    # If one word makes up more than this fraction of recent messages, it's spam
+    SPAM_DOMINANCE_THRESHOLD = 0.6
+
+    def is_spam(self) -> bool:
+        """
+        Returns True if the recent messages look like a giveaway/keyword flood
+        rather than organic hype.
+
+        Two checks:
+        1. A known spam keyword dominates recent messages
+        2. A single word appears in >60% of recent messages (catches unknown keywords)
+        """
+        if not self._recent_messages:
+            return False
+
+        messages = list(self._recent_messages)
+        total = len(messages)
+
+        # Extract the main content word from each message (lowercase, strip username prefix)
+        words = []
+        for m in messages:
+            content = m.split(": ", 1)[-1].strip().lower()
+            # Take first word only (keyword spams are usually single word)
+            first_word = content.split()[0] if content.split() else ""
+            words.append(first_word)
+
+        # Check 1: known spam keyword
+        for word in words:
+            if word in self.SPAM_KEYWORDS:
+                count = words.count(word)
+                if count / total >= self.SPAM_DOMINANCE_THRESHOLD:
+                    log.info(f"Spam filter: known keyword '{word}' in {count}/{total} messages — skipping")
+                    return True
+
+        # Check 2: any single word dominates (unknown giveaway keyword)
+        from collections import Counter
+        top_word, top_count = Counter(words).most_common(1)[0]
+        if top_word and top_count / total >= self.SPAM_DOMINANCE_THRESHOLD:
+            log.info(f"Spam filter: '{top_word}' dominates {top_count}/{total} messages — skipping")
+            return True
+
+        return False
+
     def should_trigger(self, rate: float, now: datetime) -> bool:
         if rate < self.threshold / self.window:
             return False
         if self._last_trigger is None:
-            return True
-        return (now - self._last_trigger).total_seconds() >= self.cooldown
+            return not self.is_spam()
+        if (now - self._last_trigger).total_seconds() < self.cooldown:
+            return False
+        return not self.is_spam()
 
     def trigger(self, channel: str, stream_id: str, offset: float, rate: float) -> HypeMoment:
         now = datetime.now(timezone.utc)
@@ -214,7 +264,7 @@ class KickChatScout:
         except json.JSONDecodeError:
             return
 
-        if envelope.get("event") != "App\\Events\\ChatMessageEvent":
+        if envelope.get("event") != "App\\Events\\ChatMessageSent":
             return
 
         try:
@@ -225,8 +275,8 @@ class KickChatScout:
         now = datetime.now(timezone.utc)
         msg = ChatMessage(
             channel=self.channel_slug,
-            username=data.get("sender", {}).get("username", "unknown") or data.get("user", {}).get("username", "unknown"),
-            content=data.get("content") or data.get("message", {}).get("message", ""),
+            username=data.get("sender", {}).get("username", "unknown"),
+            content=data.get("content", ""),
             timestamp=now,
             stream_offset=self._offset(now),
         )
