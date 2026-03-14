@@ -32,7 +32,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yt-dlp
 
       - name: Install Python dependencies
-        run: pip install faster-whisper python-dotenv anthropic aiohttp
+        run: pip install faster-whisper python-dotenv anthropic aiohttp curl-cffi
 
       - name: Run Clipper
         env:
