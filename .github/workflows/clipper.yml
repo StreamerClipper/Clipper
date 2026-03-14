@@ -2,8 +2,6 @@ name: Clipper — process hype moment
 
 on:
   push:
-    branches:
-      - main
     paths:
       - "output/pending_moments.jsonl"
 
@@ -11,7 +9,7 @@ jobs:
   clip:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write   # needed to commit the finished clip back
 
     steps:
       - name: Checkout repo
@@ -21,6 +19,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install ffmpeg
         run: sudo apt-get install -y ffmpeg
@@ -32,7 +31,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yt-dlp
 
       - name: Install Python dependencies
-        run: pip install faster-whisper python-dotenv anthropic aiohttp curl-cffi
+        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink
 
       - name: Run Clipper
         env:
@@ -51,7 +50,7 @@ jobs:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
         run: python -m agents.publisher
-        continue-on-error: true
+        continue-on-error: true   # don't fail the workflow if posting fails
 
       - name: Commit processed moments + clip
         run: |
