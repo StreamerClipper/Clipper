@@ -76,7 +76,14 @@ def download_segment(vod_url: str, start: float, duration: float, output_path: P
 
     # Get the direct URL without downloading
     result = subprocess.run(
-        ["yt-dlp", "--get-url", "--format", "best[ext=mp4]/best", vod_url],
+        [
+        "yt-dlp",
+        "--get-url",
+        "--format", "best[ext=mp4]/best",
+        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--add-header", "Referer:https://kick.com",
+        vod_url,
+        ],
         capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -95,6 +102,7 @@ def download_segment(vod_url: str, start: float, duration: float, output_path: P
         "ffmpeg", "-y",
         "-ss", str(max(0, start)),
         "-i", stream_url,
+        "-headers", "Referer: https://kick.com\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n",
         "-t", str(duration),
         "-c:v", "libx264",
         "-c:a", "aac",
