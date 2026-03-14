@@ -250,8 +250,8 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
             # Top: crop webcam area, scale to out_w x cam_h
             f"[cam_src]crop={cam['w']}:{cam['h']}:{cam['x']}:{cam['y']},"
-            f"scale={out_w}:{cam_h}:force_original_aspect_ratio=decrease,"
-            f"pad={out_w}:{cam_h}:(ow-iw)/2:(oh-ih)/2[cam_out];"
+            f"scale={out_w}:{cam_h}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{cam_h}[cam_out];"
 
             # Bottom: centre crop content, scale to out_w x content_h
             f"[content_src]crop={content_crop_w}:{h}:{content_crop_x}:0,"
