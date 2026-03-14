@@ -2,6 +2,8 @@ name: Clipper — process hype moment
 
 on:
   push:
+    branches:
+      - master
     paths:
       - "output/pending_moments.jsonl"
 
