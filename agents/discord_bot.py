@@ -99,24 +99,37 @@ Respond with ONLY a JSON array of 3 strings, no markdown:
 # =============================================================================
 
 async def post_to_platforms(meta: dict, title: str):
-    """Post the approved clip to all configured platforms with the chosen title."""
+    """Download clip from GitHub and post to platforms."""
+    import requests as req
+    from pathlib import Path
+
     log.info(f"Posting to platforms: {title}")
 
-    clip_path_str = meta.get("clip_path", "")
-    hashtags = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
-    description = meta.get("description", "")
+    # Download clip from GitHub repo
+    clip_filename = meta.get("clip_path", "").split("/")[-1]
+    if not clip_filename:
+        log.error("No clip filename in metadata")
+        return
 
-    # YouTube Shorts
+    clip_url = f"https://raw.githubusercontent.com/{settings.GITHUB_REPO}/main/output/clips/{clip_filename}"
+    local_clip = Path(f"/tmp/{clip_filename}")
+
+    log.info(f"Downloading clip from GitHub: {clip_filename}")
+    r = req.get(clip_url, timeout=60)
+    if r.status_code != 200:
+        log.error(f"Failed to download clip: {r.status_code}")
+        return
+
+    local_clip.write_bytes(r.content)
+    log.info(f"Clip downloaded: {local_clip} ({local_clip.stat().st_size/1024/1024:.1f}MB)")
+
+    # YouTube upload
     if os.getenv("YOUTUBE_CLIENT_ID"):
         try:
             from agents.youtube_upload import upload_to_youtube
-            from pathlib import Path
-            video_id = upload_to_youtube(
-                Path(clip_path_str),
-                title,
-                description,
-                hashtags,
-            )
+            hashtags = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
+            description = meta.get("description", "")
+            video_id = upload_to_youtube(local_clip, title, description, hashtags)
             if video_id:
                 log.info(f"[YouTube] Uploaded: https://youtube.com/shorts/{video_id}")
             else:
@@ -130,8 +143,8 @@ async def post_to_platforms(meta: dict, title: str):
     if os.getenv("INSTAGRAM_ACCESS_TOKEN"):
         log.info("[Instagram] Posting... (not yet implemented)")
 
+    local_clip.unlink(missing_ok=True)
     log.info("Done posting to platforms.")
-
 
 # =============================================================================
 # Title selection flow
