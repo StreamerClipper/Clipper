@@ -2,6 +2,8 @@ name: Clipper — process hype moment
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "output/pending_moments.jsonl"
 
@@ -9,7 +11,7 @@ jobs:
   clip:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit the finished clip back
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -19,7 +21,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-v2
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install ffmpeg
         run: sudo apt-get install -y ffmpeg
@@ -29,17 +38,10 @@ jobs:
           sudo curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
             -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
-          
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            
+
       - name: Install Python dependencies
-        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client "demucs==4.0.0" "torchaudio==2.0.0" "torch==2.0.0"        
+        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client
+
       - name: Download OSRS music tracks
         run: python3 -c "from agents.music import download_tracks; download_tracks()"
 
@@ -57,12 +59,13 @@ jobs:
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
         run: python -m agents.publisher
-        continue-on-error: true   # don't fail the workflow if posting fails
+        continue-on-error: true
 
       - name: Commit processed moments + clip
         run: |
