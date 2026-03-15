@@ -23,8 +23,26 @@ from pathlib import Path
 import websockets
 import aiohttp
 import cloudscraper
+import requests
 
 from core.models import ChatMessage, HypeMoment
+
+DISCORD_LOG_CHANNEL = "1482831221347057826"
+
+def discord_log(message: str, token: str):
+    """Fire-and-forget Discord message to the log channel."""
+    if not token:
+        return
+    try:
+        import requests
+        requests.post(
+            f"https://discord.com/api/v10/channels/{DISCORD_LOG_CHANNEL}/messages",
+            headers={"Authorization": f"Bot {token}"},
+            json={"content": message},
+            timeout=5
+        )
+    except Exception:
+        pass
 from config.settings import settings
 
 logging.basicConfig(
@@ -34,7 +52,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("scout")
 
-KICK_WS_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=7.4.0&flash=false"
+KICK_WS_URL = "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false"
 KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 
@@ -284,6 +302,16 @@ class KickChatScout:
         rate = self.detector.push(msg)
         log.debug(f"[{msg.username}] {msg.content}  ({rate:.1f} msg/s)")
 
+        # Discord alert when hype is building (67% of threshold)
+        msgs_in_window = int(rate * self.detector.window)
+        build_threshold = int(settings.HYPE_THRESHOLD * 0.67)
+        if msgs_in_window == build_threshold:
+            discord_log(
+                f"⚡ **Hype building** on #{self.channel_slug} — "
+                f"{msgs_in_window}/{settings.HYPE_THRESHOLD} msgs in {settings.HYPE_WINDOW_SECONDS}s",
+                settings.DISCORD_BOT_TOKEN
+            )
+
         if self.detector.should_trigger(rate, now):
             offset = self._offset(now)
             moment = self.detector.trigger(
@@ -303,6 +331,17 @@ class KickChatScout:
                 f"{'='*50}"
             )
 
+            # Discord alert when hype triggers
+            sample = moment.trigger_messages[-1] if moment.trigger_messages else ""
+            discord_log(
+                f"🔥 **HYPE TRIGGERED** on #{self.channel_slug}\n"
+                f"Rate: `{moment.message_rate:.0f}` msgs/{settings.HYPE_WINDOW_SECONDS}s\n"
+                f"Offset: `{offset:.0f}s` into stream\n"
+                f"Sample: `{sample}`\n"
+                f"⏳ Clip processing started...",
+                settings.DISCORD_BOT_TOKEN
+            )
+
             with open(self._local_log, "a") as f:
                 f.write(json.dumps(moment.to_dict()) + "\n")
 
@@ -313,22 +352,16 @@ async def main(channel: str, debug: bool = False):
     if debug:
         logging.getLogger("scout").setLevel(logging.DEBUG)
 
+    scout = KickChatScout(channel)
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, loop.stop)
 
-    total_moments = 0
-    while True:
-        try:
-            scout = KickChatScout(channel)
-            await scout.run()
-            total_moments += len(scout._moments)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            log.warning(f"Scout crashed: {e} — reconnecting in 30s...")
-
-        log.info("Waiting 30s before reconnecting...")
-        await asyncio.sleep(30)
+    try:
+        await scout.run()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        log.info(f"Scout stopped. {len(scout._moments)} moment(s) detected.")
 
 
 if __name__ == "__main__":
