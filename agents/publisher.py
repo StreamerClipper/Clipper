@@ -133,6 +133,7 @@ def send_to_discord(clip_path: Path, meta: dict, moment_data: dict) -> bool:
         log.info(f"Clip sent to Discord — message ID: {message_id}")
 
         # Add approval reactions
+        import time
         for emoji in ["✅", "❌"]:
             encoded = urllib.parse.quote(emoji)
             reaction_url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages/{message_id}/reactions/{encoded}/@me"
@@ -141,6 +142,7 @@ def send_to_discord(clip_path: Path, meta: dict, moment_data: dict) -> bool:
                 log.info(f"Added {emoji} reaction")
             else:
                 log.warning(f"Failed to add {emoji}: {react_resp.status_code}")
+            time.sleep(0.5)  # avoid rate limit
 
         # Save message ID so the Discord bot can look it up
         pending = {
