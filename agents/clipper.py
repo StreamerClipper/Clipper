@@ -377,8 +377,8 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             "BackColour=&H00000000,"
             "Outline=3,"                  # thick outline
             "Shadow=0,"
-            "Alignment=2,"               # centre bottom
-            "MarginV=618'"                # push up from bottom edge
+            "Alignment=8,"               # centre bottom
+            "MarginV=410'"                # push up from bottom edge
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
