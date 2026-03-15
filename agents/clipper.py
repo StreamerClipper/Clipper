@@ -36,10 +36,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.775),   # starts at ~77.5% across (1488px on 1920)
+        "x": int(w * 0.776),   # 1490px on 1920 — verified top-right position
         "y": 0,
-        "w": int(w * 0.225),   # ~22.5% wide (432px)
-        "h": int(h * 0.320),   # ~32% tall (346px)
+        "w": int(w * 0.224),   # 430px wide
+        "h": int(h * 0.310),   # 335px tall
     },
 }
 
@@ -213,6 +213,9 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
 
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
+    # Skip Claude detection for known channels — use verified coordinates
+    if channel in WEBCAM_DEFAULTS:
+        return get_default_webcam(channel, video_w, video_h)
     """
     Dynamically detect webcam position using Claude vision.
     Uses an improved prompt with explicit guidance on what to look for.
