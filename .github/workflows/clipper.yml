@@ -31,7 +31,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yt-dlp
 
       - name: Install Python dependencies
-        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink
+        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests
 
       - name: Run Clipper
         env:
@@ -43,6 +43,8 @@ jobs:
       - name: Run Publisher
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: "1482642033481875536"
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
