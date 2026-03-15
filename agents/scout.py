@@ -126,7 +126,7 @@ async def push_moment_to_github(moment: HypeMoment, session: aiohttp.ClientSessi
 
 class HypeDetector:
     SPAM_KEYWORDS = {
-        "weeat", "!giveaway", "!enter", "!join", "giveaway",
+        "weeat", "weet", "!giveaway", "!enter", "!join", "giveaway",
         "!claim", "!free", "!drop",
     }
     SPAM_DOMINANCE_THRESHOLD = 0.6
