@@ -59,23 +59,26 @@ TRACKS = {
 }
 
 # Internet Archive direct download URLs for each track
+# Base URL for the verified Runescape OST Classics collection on Internet Archive
+_BASE = "https://archive.org/download/Runescape-OST-Classics"
+
 TRACK_URLS = {
-    "Scape_Bold.mp3":     "https://archive.org/download/OldRunescapeSoundtrack/Scape%20Bold.mp3",
-    "Scape_Suspense.mp3": "https://archive.org/download/OldRunescapeSoundtrack/Scape%20Suspense.mp3",
-    "Scape_Theme.mp3":    "https://archive.org/download/OldRunescapeSoundtrack/Scape%20Theme.mp3",
-    "Adventure.mp3":      "https://archive.org/download/OldRunescapeSoundtrack/Adventure.mp3",
-    "Fanfare.mp3":        "https://archive.org/download/OldRunescapeSoundtrack/Fanfare.mp3",
-    "Autumn_Voyage.mp3":  "https://archive.org/download/OldRunescapeSoundtrack/Autumn%20Voyage.mp3",
-    "Flute_Salad.mp3":    "https://archive.org/download/OldRunescapeSoundtrack/Flute%20Salad.mp3",
-    "Baroque.mp3":        "https://archive.org/download/OldRunescapeSoundtrack/Baroque.mp3",
-    "Gnome.mp3":          "https://archive.org/download/OldRunescapeSoundtrack/Gnome.mp3",
-    "Harmony.mp3":        "https://archive.org/download/OldRunescapeSoundtrack/Harmony.mp3",
-    "Sea_Shanty_2.mp3":   "https://archive.org/download/OldRunescapeSoundtrack/Sea%20Shanty%202.mp3",
-    "Morytania.mp3":      "https://archive.org/download/OldRunescapeSoundtrack/Morytania.mp3",
-    "Yesteryear.mp3":     "https://archive.org/download/OldRunescapeSoundtrack/Yesteryear.mp3",
-    "Newbie_Melody.mp3":  "https://archive.org/download/OldRunescapeSoundtrack/Newbie%20Melody.mp3",
-    "Lament.mp3":         "https://archive.org/download/OldRunescapeSoundtrack/Lament.mp3",
-    "Sad_Meadow.mp3":     "https://archive.org/download/OldRunescapeSoundtrack/Sad%20Meadow.mp3",
+    "Scape_Bold.mp3":     "https://archive.org/download/HamAttack_201609/Scape%20Bold.mp3",
+    "Scape_Suspense.mp3": "https://archive.org/download/HamAttack_201609/Scape%20Suspense.mp3",
+    "Scape_Theme.mp3":    "https://archive.org/download/HamAttack_201609/Scape%20Theme.mp3",
+    "Adventure.mp3":      f"{_BASE}/Adventure.mp3",
+    "Fanfare.mp3":        f"{_BASE}/Fanfare.mp3",
+    "Autumn_Voyage.mp3":  f"{_BASE}/Autumn%20Voyage.mp3",
+    "Flute_Salad.mp3":    f"{_BASE}/Flute%20Salad.mp3",
+    "Baroque.mp3":        f"{_BASE}/Baroque.mp3",
+    "Gnome.mp3":          "https://archive.org/download/HamAttack_201609/Gnome.mp3",
+    "Harmony.mp3":        f"{_BASE}/Harmony.mp3",
+    "Sea_Shanty_2.mp3":   f"{_BASE}/Sea%20Shanty%202.mp3",
+    "Morytania.mp3":      "https://archive.org/download/HamAttack_201609/Morytania.mp3",
+    "Yesteryear.mp3":     f"{_BASE}/Yesteryear.mp3",
+    "Newbie_Melody.mp3":  f"{_BASE}/Newbie%20Melody.mp3",
+    "Lament.mp3":         "https://archive.org/download/HamAttack_201609/Lament.mp3",
+    "Sad_Meadow.mp3":     "https://archive.org/download/HamAttack_201609/Sad%20Meadow.mp3",
 }
 
 
@@ -115,7 +118,7 @@ Streamer transcript (if available):
 
 Choose exactly ONE vibe from this list:
 - hype: exciting combat, big plays, intense moments, PogChamp spam
-- funny: KEKW floods, chaotic moments, trolling, absurd situations  
+- funny: KEKW floods, chaotic moments, trolling, absurd situations
 - chill: skilling, relaxed chat, low energy moments
 - loot: rare drops, big wins, valuable items, gambling wins
 - sad: deaths, losses, bad luck, RIP spam, F in chat
