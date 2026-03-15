@@ -25,6 +25,10 @@ class Settings:
     CLIP_PADDING_BEFORE: int = int(os.getenv("CLIP_PADDING_BEFORE", 20))
     CLIP_PADDING_AFTER: int = int(os.getenv("CLIP_PADDING_AFTER", 10))
 
+    # Discord
+    DISCORD_BOT_TOKEN: str = os.getenv("DISCORD_BOT_TOKEN", "")
+    DISCORD_CHANNEL_ID: str = os.getenv("DISCORD_CHANNEL_ID", "1482642033481875536")
+
     # Output paths
     CLIPS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "output", "clips")
     LOGS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "output", "logs")
