@@ -477,6 +477,7 @@ def process_moment(moment: dict) -> Path | None:
     raw     = tmp / f"{slug}_raw.ts"
     clean   = tmp / f"{slug}_clean.ts"
     cropped = tmp / f"{slug}_cropped.mp4"
+    scored  = tmp / f"{slug}_scored.mp4"
     final   = CLIPS_DIR / f"{slug}_final.mp4"
 
     if not record_live_segment(channel, DURATION, raw):
@@ -485,12 +486,23 @@ def process_moment(moment: dict) -> Path | None:
         return None
     if not crop_to_vertical(clean, cropped, channel):
         return None
-    if not add_captions(cropped, final):
+
+    # Mix in vibe-matched OSRS background music
+    try:
+        from agents.music import mix_music
+        trigger_messages = moment.get("trigger_messages", [])
+        mix_music(cropped, scored, trigger_messages)
+    except Exception as e:
+        log.warning(f"Music mix failed: {e} — skipping music")
+        shutil.copy(cropped, scored)
+
+    if not add_captions(scored, final):
         return None
 
     raw.unlink(missing_ok=True)
     clean.unlink(missing_ok=True)
     cropped.unlink(missing_ok=True)
+    scored.unlink(missing_ok=True)
 
     log.info(f"Clip ready: {final}")
     return final
