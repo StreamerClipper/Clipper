@@ -36,10 +36,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.712),
+        "x": int(w * 0.776),
         "y": 0,
-        "w": int(w * 0.288),
-        "h": int(h * 0.337),
+        "w": int(w * 0.224),
+        "h": int(h * 0.310),
     },
 }
 
@@ -220,14 +220,11 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
 
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
-    """
-    Dynamically detect webcam position using Claude vision.
-    Uses an improved prompt with explicit guidance on what to look for.
-    Falls back to channel default only if Claude truly can't find a webcam.
-    """
-    if not ANTHROPIC_API_KEY:
-        log.warning("No ANTHROPIC_API_KEY — using channel default")
-        return get_default_webcam(channel, video_w, video_h)
+    # Use verified coordinates for known channels — Claude keeps detecting incorrectly
+    if channel in WEBCAM_DEFAULTS:
+        cam = get_default_webcam(channel, video_w, video_h)
+        log.info(f"Using verified coordinates for #{channel}: {cam}")
+        return cam
 
     try:
         import anthropic
