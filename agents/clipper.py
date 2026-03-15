@@ -36,15 +36,22 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.776),   # 1490px on 1920 — verified top-right position
+        "x": int(w * 0.712),
         "y": 0,
-        "w": int(w * 0.224),   # 430px wide
-        "h": int(h * 0.310),   # 335px tall
+        "w": int(w * 0.288),
+        "h": int(h * 0.337),
     },
 }
 
 # Per-channel content crop (game area, excludes black bars)
-CONTENT_CROP_DEFAULTS = {}
+CONTENT_CROP_DEFAULTS = {
+    "odablock": lambda w, h: {
+        "x": 0,
+        "y": 0,
+        "w": int(w * 0.673),
+        "h": int(h * 0.687),
+    },
+}
 
 
 # =============================================================================
@@ -213,9 +220,6 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
 
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
-    # Skip Claude detection for known channels — use verified coordinates
-    if channel in WEBCAM_DEFAULTS:
-        return get_default_webcam(channel, video_w, video_h)
     """
     Dynamically detect webcam position using Claude vision.
     Uses an improved prompt with explicit guidance on what to look for.
@@ -515,8 +519,16 @@ def process_moment(moment: dict) -> Path | None:
     scored  = tmp / f"{slug}_scored.mp4"
     final   = CLIPS_DIR / f"{slug}_final.mp4"
 
-    if not record_live_segment(channel, DURATION, raw):
+    # Use pre-extracted clip from buffer if available (preferred — exact moment)
+    local_clip = moment.get("local_clip_path", "")
+    if local_clip and Path(local_clip).exists():
+        log.info(f"Using pre-extracted clip from buffer: {local_clip}")
+        shutil.copy(local_clip, raw)
+        Path(local_clip).unlink(missing_ok=True)
+        log.info(f"Deleted source buffer clip to free space")
+    elif not record_live_segment(channel, DURATION, raw):
         return None
+
     if not separate_vocals(raw, clean):
         return None
     if not crop_to_vertical(clean, cropped, channel):
