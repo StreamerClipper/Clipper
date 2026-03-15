@@ -39,8 +39,7 @@ jobs:
             ${{ runner.os }}-pip-
             
       - name: Install Python dependencies
-        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client "demucs==4.0.0"
-        
+        run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client "demucs==4.0.0" "torchaudio==2.0.0" "torch==2.0.0"        
       - name: Download OSRS music tracks
         run: python3 -c "from agents.music import download_tracks; download_tracks()"
 
