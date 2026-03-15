@@ -2,9 +2,13 @@
 agents/clipper.py — Agent 2: Clipper
 
 Runs inside a GitHub Actions workflow (NOT on PythonAnywhere).
-Records a live segment from a Kick stream using streamlink,
-uses Claude vision to detect webcam position, then composites
-a 9:16 vertical clip with cam on top (40%) and content on bottom (60%).
+Pipeline:
+  1. Record live segment from Kick via streamlink
+  2. Separate vocals from music via Demucs (removes copyrighted music)
+  3. Detect webcam position via Claude vision
+  4. Crop to 9:16 vertical layout (40% cam top, 60% content bottom)
+  5. Add word-by-word captions via Whisper
+  6. Save finished clip to output/clips/
 """
 import json
 import logging
@@ -28,6 +32,26 @@ MOMENTS_FILE = Path("output/pending_moments.jsonl")
 PROCESSED_FILE = Path("output/processed_moments.jsonl")
 DURATION = int(os.getenv("CLIP_PADDING_BEFORE", 20)) + int(os.getenv("CLIP_PADDING_AFTER", 10))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Per-channel webcam positions (proportional to source resolution)
+WEBCAM_DEFAULTS = {
+    "odablock": lambda w, h: {
+        "x": int(w * 0.712),
+        "y": 0,
+        "w": int(w * 0.288),
+        "h": int(h * 0.337),
+    },
+}
+
+# Per-channel content crop (game area, excludes black bars)
+CONTENT_CROP_DEFAULTS = {
+    "odablock": lambda w, h: {
+        "x": 0,
+        "y": 0,
+        "w": int(w * 0.673),
+        "h": int(h * 0.687),
+    },
+}
 
 
 # =============================================================================
@@ -94,11 +118,88 @@ def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
 
 
 # =============================================================================
-# Step 2 — Detect webcam position with Claude vision
+# Step 2 — Separate vocals from music using Demucs
+# =============================================================================
+
+def separate_vocals(input_path: Path, output_path: Path) -> bool:
+    """
+    Use Demucs to extract only the vocals/speech track.
+    Removes background music to avoid YouTube Content ID strikes
+    while keeping the streamer's voice and reactions intact.
+    Falls back to original audio if Demucs fails.
+    """
+    log.info("Separating vocals from music with Demucs...")
+    tmp = Path("/tmp/demucs_out")
+    tmp.mkdir(exist_ok=True)
+
+    # Extract audio from video as WAV for Demucs
+    audio_path = Path("/tmp/demucs_input.wav")
+    result = subprocess.run([
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-vn", "-ar", "44100", "-ac", "2",
+        str(audio_path)
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0 or not audio_path.exists():
+        log.warning("Could not extract audio — using original")
+        shutil.copy(input_path, output_path)
+        return True
+
+    # Run Demucs in two-stems mode (vocals vs everything else)
+    result = subprocess.run([
+        "python3", "-m", "demucs",
+        "--two-stems", "vocals",
+        "--out", str(tmp),
+        "-d", "cpu",
+        str(audio_path)
+    ], capture_output=True, text=True, timeout=180)
+
+    if result.returncode != 0:
+        log.warning(f"Demucs failed: {result.stderr[-300:]} — using original audio")
+        shutil.copy(input_path, output_path)
+        return True
+
+    # Find the vocals.wav file Demucs produced
+    vocals_files = list(tmp.glob("**/vocals.wav"))
+    if not vocals_files:
+        log.warning("Demucs produced no vocals file — using original audio")
+        shutil.copy(input_path, output_path)
+        return True
+
+    vocals_path = vocals_files[0]
+    log.info(f"Vocals separated successfully: {vocals_path}")
+
+    # Merge vocals audio back with original video stream
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),      # original video
+        "-i", str(vocals_path),     # vocals-only audio from Demucs
+        "-map", "0:v",              # video track from original
+        "-map", "1:a",              # audio track from Demucs
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        str(output_path)
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        log.warning(f"Audio merge failed — using original: {result.stderr[-300:]}")
+        shutil.copy(input_path, output_path)
+        return True
+
+    # Cleanup temp files
+    audio_path.unlink(missing_ok=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    log.info(f"Music removed, vocals kept: {output_path}")
+    return True
+
+
+# =============================================================================
+# Step 3 — Detect webcam position with Claude vision
 # =============================================================================
 
 def extract_frame(video_path: Path, frame_path: Path) -> bool:
-    """Extract the first frame of the video as a JPEG."""
     cmd = [
         "ffmpeg", "-y",
         "-i", str(video_path),
@@ -109,45 +210,19 @@ def extract_frame(video_path: Path, frame_path: Path) -> bool:
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.returncode == 0 and frame_path.exists()
 
-# Per-channel webcam defaults (used when Claude vision fails)
-# Per-channel webcam positions (proportional to source resolution)
-WEBCAM_DEFAULTS = {
-    "odablock": lambda w, h: {
-        "x": int(w * 0.712),   # starts at ~71% across
-        "y": 0,
-        "w": int(w * 0.288),   # ~29% wide
-        "h": int(h * 0.337),   # ~34% tall
-    },
-}
-
-# Per-channel content crop (the game area to show in the bottom 60%)
-CONTENT_CROP_DEFAULTS = {
-    "odablock": lambda w, h: {
-        "x": 0,
-        "y": 0,
-        "w": int(w * 0.673),   # left 67% = game area
-        "h": int(h * 0.687),   # top 69% = above black bar
-    },
-}
 
 def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
     if channel in WEBCAM_DEFAULTS:
         cam = WEBCAM_DEFAULTS[channel](video_w, video_h)
-        log.info(f"Using default webcam position for #{channel}: {cam}")
+        log.info(f"Using default webcam for #{channel}: {cam}")
         return cam
     return None
 
-def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
-    """
-    Send the first frame to Claude vision and ask it to identify
-    the webcam/facecam bounding box.
 
-    Returns a dict with keys: x, y, w, h (in pixels)
-    or None if no webcam detected.
-    """
+def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
     if not ANTHROPIC_API_KEY:
-        log.warning("No ANTHROPIC_API_KEY — skipping webcam detection, using fullscreen crop")
-        return None
+        log.warning("No ANTHROPIC_API_KEY — using channel default")
+        return get_default_webcam(channel, video_w, video_h)
 
     try:
         import anthropic
@@ -187,14 +262,12 @@ If there is no visible webcam/facecam, respond with:
             }]
         )
 
-        text = response.content[0].text.strip()
-        # Strip any accidental markdown
-        text = text.replace("```json", "").replace("```", "").strip()
+        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(text)
 
         if not result.get("has_webcam"):
-            log.info("Claude: no webcam detected — will use fullscreen crop")
-            return None
+            log.info("Claude: no webcam detected — using channel default")
+            return get_default_webcam(channel, video_w, video_h)
 
         cam = {
             "x": int(result["x"]),
@@ -202,16 +275,16 @@ If there is no visible webcam/facecam, respond with:
             "w": int(result["w"]),
             "h": int(result["h"]),
         }
-        log.info(f"Claude detected webcam at x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
+        log.info(f"Claude detected webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
         return cam
 
     except Exception as e:
-        log.warning(f"Webcam detection failed: {e} — trying channel default")
+        log.warning(f"Webcam detection failed: {e} — using channel default")
         return get_default_webcam(channel, video_w, video_h)
 
 
 # =============================================================================
-# Step 3 — Composite 9:16 layout
+# Step 4 — Crop to 9:16 vertical layout
 # =============================================================================
 
 def get_video_dimensions(video_path: Path) -> tuple[int, int]:
@@ -229,20 +302,19 @@ def get_video_dimensions(video_path: Path) -> tuple[int, int]:
 def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> bool:
     """
     Build a 9:16 vertical clip:
-    - Top 40%: streamer webcam (detected by Claude vision)
-    - Bottom 60%: game/content (centre crop of source)
+    - Top 40%: streamer webcam (Claude vision or channel default)
+    - Bottom 60%: game/content (channel-specific crop)
     - Falls back to simple centre crop if no webcam found
     """
     w, h = get_video_dimensions(input_path)
     log.info(f"Source dimensions: {w}x{h}")
 
-    # Output canvas: 9:16 at 1080p = 608x1080 (rounded to even)
     out_w = 608
     out_h = 1080
     cam_h = int(out_h * 0.40)    # 432px — top 40%
     content_h = out_h - cam_h    # 648px — bottom 60%
 
-    # Extract first frame for Claude
+    # Extract frame for Claude
     frame_path = input_path.with_suffix(".jpg")
     has_frame = extract_frame(input_path, frame_path)
 
@@ -252,10 +324,9 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
         frame_path.unlink(missing_ok=True)
 
     if cam:
-        # === Layout: cam top 40%, content bottom 60% ===
         log.info("Building 40/60 cam+content layout...")
 
-        # Use channel-specific content crop if available, else centre crop
+        # Use channel-specific content crop if available
         content_def = CONTENT_CROP_DEFAULTS.get(channel)
         if content_def:
             cc = content_def(w, h)
@@ -287,7 +358,6 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
             str(output_path)
         ]
     else:
-        # === Fallback: simple centre crop to 9:16 ===
         log.info("No webcam — using fullscreen centre crop...")
         target_w = int(h * 9 / 16)
         crop_x = (w - target_w) // 2
@@ -312,7 +382,7 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
 
 # =============================================================================
-# Step 4 — Add captions with Whisper
+# Step 5 — Add word-by-word captions with Whisper
 # =============================================================================
 
 def add_captions(input_path: Path, output_path: Path) -> bool:
@@ -331,7 +401,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         segments, _ = model.transcribe(
             str(input_path),
             beam_size=1,
-            word_timestamps=True  # enables word-by-word timing
+            word_timestamps=True
         )
 
         def fmt_time(t):
@@ -340,19 +410,16 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             ms = int((s % 1) * 1000)
             return f"{int(h):02}:{int(m):02}:{int(s):02},{ms:03}"
 
-        # Write one subtitle entry per word
         entries = []
         for seg in segments:
             if hasattr(seg, "words") and seg.words:
                 for word in seg.words:
                     entries.append((word.start, word.end, word.word.strip().upper()))
             else:
-                # Fallback to segment level if no word timestamps
                 entries.append((seg.start, seg.end, seg.text.strip().upper()))
 
         with open(srt_path, "w") as f:
             for i, (start, end, text) in enumerate(entries, 1):
-                # Add small buffer so words don't disappear too fast
                 end = max(end, start + 0.15)
                 f.write(f"{i}\n{fmt_time(start)} --> {fmt_time(end)}\n{text}\n\n")
 
@@ -363,7 +430,6 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         shutil.copy(input_path, output_path)
         return True
 
-    # Burn with large centred style matching Odablock's YouTube Shorts
     cmd = [
         "ffmpeg", "-y",
         "-i", str(input_path),
@@ -371,14 +437,14 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             f"subtitles={srt_path}:force_style='"
             "FontName=Arial,"
             "FontSize=22,"
-            "Bold=2,"
-            "PrimaryColour=&H00FFFFFF,"   # white text
-            "OutlineColour=&H00000000,"   # black outline
+            "Bold=1,"
+            "PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,"
             "BackColour=&H00000000,"
-            "Outline=3,"                  # thick outline
+            "Outline=3,"
             "Shadow=0,"
-            "Alignment=8,"               # centre bottom
-            "MarginV=410'"                # push up from bottom edge
+            "Alignment=8,"
+            "MarginV=410'"
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
@@ -391,7 +457,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         shutil.copy(input_path, output_path)
 
     srt_path.unlink(missing_ok=True)
-    log.info(f"Final clip with word captions: {output_path}")
+    log.info(f"Final clip with captions: {output_path}")
     return True
 
 
@@ -408,18 +474,22 @@ def process_moment(moment: dict) -> Path | None:
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     slug = f"{channel}_{timestamp}"
 
-    raw = tmp / f"{slug}_raw.ts"
+    raw     = tmp / f"{slug}_raw.ts"
+    clean   = tmp / f"{slug}_clean.ts"
     cropped = tmp / f"{slug}_cropped.mp4"
-    final = CLIPS_DIR / f"{slug}_final.mp4"
+    final   = CLIPS_DIR / f"{slug}_final.mp4"
 
     if not record_live_segment(channel, DURATION, raw):
         return None
-    if not crop_to_vertical(raw, cropped, channel):
+    if not separate_vocals(raw, clean):
+        return None
+    if not crop_to_vertical(clean, cropped, channel):
         return None
     if not add_captions(cropped, final):
         return None
 
     raw.unlink(missing_ok=True)
+    clean.unlink(missing_ok=True)
     cropped.unlink(missing_ok=True)
 
     log.info(f"Clip ready: {final}")
