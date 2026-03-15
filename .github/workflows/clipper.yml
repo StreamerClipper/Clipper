@@ -29,7 +29,15 @@ jobs:
           sudo curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
             -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
-
+          
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            
       - name: Install Python dependencies
         run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client "demucs==4.0.0"
         
