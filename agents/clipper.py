@@ -220,6 +220,11 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
 
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
+    """
+    Dynamically detect webcam position using Claude vision.
+    Uses an improved prompt with explicit guidance on what to look for.
+    Falls back to channel default only if Claude truly can't find a webcam.
+    """
     if not ANTHROPIC_API_KEY:
         log.warning("No ANTHROPIC_API_KEY — using channel default")
         return get_default_webcam(channel, video_w, video_h)
@@ -247,15 +252,21 @@ def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "
                     },
                     {
                         "type": "text",
-                        "text": f"""This is a frame from a live stream. The full resolution is {video_w}x{video_h} pixels.
+                        "text": f"""This is a frame from a Kick.com live stream at {video_w}x{video_h} pixels.
 
-Identify the streamer's webcam/facecam rectangle if one exists.
+Find the streamer's webcam showing their FACE. It is a real-world camera feed of a person, usually:
+- In a corner of the screen (top-right is most common)
+- A rectangle showing a person's face, shoulders, and room background
+- Overlaid on top of the game content
+- Typically 200-500px wide
 
-Respond ONLY with a JSON object — no explanation, no markdown:
-{{"has_webcam": true, "x": 0, "y": 0, "w": 320, "h": 240}}
+Look carefully at all four corners and edges of the image for a person's face.
 
-Where x, y, w, h are pixel coordinates of the webcam in the full {video_w}x{video_h} frame.
-If there is no visible webcam/facecam, respond with:
+Respond ONLY with JSON — no explanation, no markdown:
+{{"has_webcam": true, "x": 1400, "y": 0, "w": 480, "h": 380}}
+
+Where x,y is the TOP-LEFT corner of the webcam rectangle in pixels.
+If you genuinely cannot find a person's face/webcam:
 {{"has_webcam": false}}"""
                     }
                 ]
@@ -263,10 +274,11 @@ If there is no visible webcam/facecam, respond with:
         )
 
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        log.info(f"Claude webcam response: {text}")
         result = json.loads(text)
 
         if not result.get("has_webcam"):
-            log.info("Claude: no webcam detected — using channel default")
+            log.info("Claude: no webcam found — using channel default")
             return get_default_webcam(channel, video_w, video_h)
 
         cam = {
@@ -275,6 +287,15 @@ If there is no visible webcam/facecam, respond with:
             "w": int(result["w"]),
             "h": int(result["h"]),
         }
+
+        # Sanity check — webcam should be at least 100x100px and within frame
+        if cam["w"] < 100 or cam["h"] < 100:
+            log.warning(f"Webcam too small ({cam['w']}x{cam['h']}) — using channel default")
+            return get_default_webcam(channel, video_w, video_h)
+        if cam["x"] + cam["w"] > video_w or cam["y"] + cam["h"] > video_h:
+            log.warning(f"Webcam out of bounds — using channel default")
+            return get_default_webcam(channel, video_w, video_h)
+
         log.info(f"Claude detected webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
         return cam
 
@@ -302,8 +323,8 @@ def get_video_dimensions(video_path: Path) -> tuple[int, int]:
 def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> bool:
     """
     Build a 9:16 vertical clip:
-    - Top 40%: streamer webcam (Claude vision or channel default)
-    - Bottom 60%: game/content (channel-specific crop)
+    - Top 40%: streamer webcam (dynamically detected by Claude vision)
+    - Bottom 60%: game/content (auto-detected as area excluding webcam)
     - Falls back to simple centre crop if no webcam found
     """
     w, h = get_video_dimensions(input_path)
@@ -325,16 +346,34 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
     if cam:
         log.info("Building 40/60 cam+content layout...")
+        log.info(f"Webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
 
-        # Use channel-specific content crop if available
+        # Dynamic content crop — exclude the webcam area
+        # If webcam is on the right side, crop left portion for content
+        # If webcam is on the left side, crop right portion for content
         content_def = CONTENT_CROP_DEFAULTS.get(channel)
         if content_def:
             cc = content_def(w, h)
             content_crop = f"crop={cc['w']}:{cc['h']}:{cc['x']}:{cc['y']}"
+            log.info(f"Using channel content crop: {cc}")
         else:
-            content_crop_w = min(w, int(h * out_w / content_h))
-            content_crop_x = max(0, (w - content_crop_w) // 2)
-            content_crop = f"crop={content_crop_w}:{h}:{content_crop_x}:0"
+            # Auto-detect content area based on webcam position
+            cam_right_edge = cam["x"] + cam["w"]
+            cam_bottom_edge = cam["y"] + cam["h"]
+
+            if cam["x"] > w * 0.5:
+                # Webcam is on the right — use left portion for content
+                content_w = cam["x"]
+                content_x = 0
+            else:
+                # Webcam is on the left — use right portion for content
+                content_w = w - cam_right_edge
+                content_x = cam_right_edge
+
+            # Only use the game area height (above any black bars)
+            content_crop_h = min(h, cam_bottom_edge + int(h * 0.3)) if cam["y"] == 0 else h
+            content_crop = f"crop={content_w}:{content_crop_h}:{content_x}:0"
+            log.info(f"Auto content crop: {content_crop}")
 
         vf = (
             f"[0:v]split=2[cam_src][content_src];"
