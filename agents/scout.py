@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("scout")
 
-KICK_WS_URL = "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false"
+KICK_WS_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=7.4.0&flash=false"
 KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 
@@ -313,16 +313,22 @@ async def main(channel: str, debug: bool = False):
     if debug:
         logging.getLogger("scout").setLevel(logging.DEBUG)
 
-    scout = KickChatScout(channel)
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, loop.stop)
 
-    try:
-        await scout.run()
-    except asyncio.CancelledError:
-        pass
-    finally:
-        log.info(f"Scout stopped. {len(scout._moments)} moment(s) detected.")
+    total_moments = 0
+    while True:
+        try:
+            scout = KickChatScout(channel)
+            await scout.run()
+            total_moments += len(scout._moments)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(f"Scout crashed: {e} — reconnecting in 30s...")
+
+        log.info("Waiting 30s before reconnecting...")
+        await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
