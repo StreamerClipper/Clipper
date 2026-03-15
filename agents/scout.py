@@ -52,7 +52,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("scout")
 
-KICK_WS_URL = "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false"
+KICK_WS_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false"
 KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 
