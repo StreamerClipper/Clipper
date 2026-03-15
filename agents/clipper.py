@@ -36,22 +36,15 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.712),
+        "x": int(w * 0.775),   # starts at ~77.5% across (1488px on 1920)
         "y": 0,
-        "w": int(w * 0.288),
-        "h": int(h * 0.337),
+        "w": int(w * 0.225),   # ~22.5% wide (432px)
+        "h": int(h * 0.320),   # ~32% tall (346px)
     },
 }
 
 # Per-channel content crop (game area, excludes black bars)
-CONTENT_CROP_DEFAULTS = {
-    "odablock": lambda w, h: {
-        "x": 0,
-        "y": 0,
-        "w": int(w * 0.673),
-        "h": int(h * 0.687),
-    },
-}
+CONTENT_CROP_DEFAULTS = {}
 
 
 # =============================================================================
