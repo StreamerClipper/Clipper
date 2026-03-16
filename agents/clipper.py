@@ -452,8 +452,14 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         entries = []
         for seg in segments:
             if hasattr(seg, "words") and seg.words:
-                for word in seg.words:
-                    entries.append((word.start, word.end, word.word.strip().upper()))
+                words = seg.words
+                # Group into pairs
+                for i in range(0, len(words), 2):
+                    pair = words[i:i+2]
+                    start = pair[0].start
+                    end = pair[-1].end
+                    text = " ".join(w.word.strip() for w in pair).upper()
+                    entries.append((start, end, text))
             else:
                 entries.append((seg.start, seg.end, seg.text.strip().upper()))
 
