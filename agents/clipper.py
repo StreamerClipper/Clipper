@@ -567,19 +567,6 @@ def process_moment(moment: dict) -> Path | None:
     # Chat overlay disabled — needs fixing
     chat_out = tmp / f"{slug}_chat.mp4"
     shutil.copy(sfx_out, chat_out)
-    try:
-        from agents.chat_overlay import build_chat_overlay
-        probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", str(sfx_out)],
-            capture_output=True, text=True
-        )
-        clip_dur = float(json.loads(probe.stdout)["format"]["duration"])
-        trigger_messages = moment.get("trigger_messages", [])
-        build_chat_overlay(sfx_out, chat_out, trigger_messages, clip_dur)
-    except Exception as e:
-        log.warning(f"Chat overlay failed: {e} — skipping")
-        shutil.copy(sfx_out, chat_out)
 
     if not add_captions(chat_out, final):
         return None
