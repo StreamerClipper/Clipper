@@ -36,10 +36,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.955),   # nudged right to centre his face
-        "y": 0,
-        "w": int(w * 0.320),   # slightly narrower
-        "h": int(h * 0.250),
+        "x": int(w * 0.7729),
+        "y": int(h * 0.0213),
+        "w": int(w * 0.2219),
+        "h": int(h * 0.2917),
     },
 }
 
@@ -52,10 +52,6 @@ CONTENT_CROP_DEFAULTS = {
         "h": int(h * 0.687),
     },
 }
-
-
-
-
 
 # =============================================================================
 # Moment queue
