@@ -37,7 +37,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
         "x": int(w * 0.7708),
-        "y": int(h * 0.0111),
+        "y": int(h * 0.0611),
         "w": int(w * 0.2036),
         "h": int(h * 0.2778),
     },
@@ -564,12 +564,13 @@ def process_moment(moment: dict) -> Path | None:
         log.warning(f"SFX mix failed: {e} — skipping SFX")
         shutil.copy(scored, sfx_out)
 
-    # Add scrolling chat overlay
+    # Chat overlay disabled — needs fixing
     chat_out = tmp / f"{slug}_chat.mp4"
+    shutil.copy(sfx_out, chat_out)
     try:
         from agents.chat_overlay import build_chat_overlay
         probe = subprocess.run(
-            ["ffprobe", "-v", "-quiet", "-print_format", "json",
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_format", str(sfx_out)],
             capture_output=True, text=True
         )
