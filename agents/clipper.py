@@ -260,8 +260,8 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
     out_w = 608
     out_h = 1080
-    cam_h = int(out_h * 0.30)    # 324px — top 30%
-    content_h = out_h - cam_h    # 756px — bottom 70%
+    cam_h = int(out_h * 0.35)    # 378px — top 35%
+    content_h = out_h - cam_h    # 702px — bottom 65%
 
     # Extract frame for Claude
     frame_path = input_path.with_suffix(".jpg")
