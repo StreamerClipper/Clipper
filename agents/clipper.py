@@ -36,10 +36,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Per-channel webcam positions (proportional to source resolution)
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
-        "x": int(w * 0.800),   # nudged right to centre his face
+        "x": int(w * 0.955),   # nudged right to centre his face
         "y": 0,
-        "w": int(w * 0.200),   # slightly narrower
-        "h": int(h * 0.310),
+        "w": int(w * 0.320),   # slightly narrower
+        "h": int(h * 0.235),
     },
 }
 
@@ -472,18 +472,17 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
     cmd = [
         "ffmpeg", "-y",
         "-i", str(input_path),
-        "-vf", (
+      "-vf", (
             f"subtitles={srt_path}:force_style='"
-            "FontName=Impact,"
-            "FontSize=23,"
+            "FontName=Arial,"
+            "FontSize=20,"
             "Bold=1,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
             "BackColour=&H00000000,"
-            "Outline=3,"
+            "Outline=2,"
             "Shadow=1,"
-            "Alignment=8,"
-            "MarginV=415'"
+            "MarginV=160'"
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
