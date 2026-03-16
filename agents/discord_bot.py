@@ -99,37 +99,24 @@ Respond with ONLY a JSON array of 3 strings, no markdown:
 # =============================================================================
 
 async def post_to_platforms(meta: dict, title: str):
-    """Download clip from GitHub and post to platforms."""
-    import requests as req
-    from pathlib import Path
-
+    """Post the approved clip to all configured platforms with the chosen title."""
     log.info(f"Posting to platforms: {title}")
 
-    # Download clip from GitHub repo
-    clip_filename = meta.get("clip_path", "").split("/")[-1]
-    if not clip_filename:
-        log.error("No clip filename in metadata")
-        return
+    clip_path_str = meta.get("clip_path", "")
+    hashtags = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
+    description = meta.get("description", "")
 
-    clip_url = f"https://raw.githubusercontent.com/{settings.GITHUB_REPO}/main/output/clips/{clip_filename}"
-    local_clip = Path(f"/tmp/{clip_filename}")
-
-    log.info(f"Downloading clip from GitHub: {clip_filename}")
-    r = req.get(clip_url, timeout=60)
-    if r.status_code != 200:
-        log.error(f"Failed to download clip: {r.status_code}")
-        return
-
-    local_clip.write_bytes(r.content)
-    log.info(f"Clip downloaded: {local_clip} ({local_clip.stat().st_size/1024/1024:.1f}MB)")
-
-    # YouTube upload
+    # YouTube Shorts
     if os.getenv("YOUTUBE_CLIENT_ID"):
         try:
             from agents.youtube_upload import upload_to_youtube
-            hashtags = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
-            description = meta.get("description", "")
-            video_id = upload_to_youtube(local_clip, title, description, hashtags)
+            from pathlib import Path
+            video_id = upload_to_youtube(
+                Path(clip_path_str),
+                title,
+                description,
+                hashtags,
+            )
             if video_id:
                 log.info(f"[YouTube] Uploaded: https://youtube.com/shorts/{video_id}")
             else:
@@ -143,8 +130,8 @@ async def post_to_platforms(meta: dict, title: str):
     if os.getenv("INSTAGRAM_ACCESS_TOKEN"):
         log.info("[Instagram] Posting... (not yet implemented)")
 
-    local_clip.unlink(missing_ok=True)
     log.info("Done posting to platforms.")
+
 
 # =============================================================================
 # Title selection flow
@@ -219,7 +206,7 @@ class ApprovalBot(discord.Client):
                         try:
                             item = json.loads(line)
                             mid = int(item["message_id"])
-                            PENDING[mid] = item.get("meta", {})
+                            PENDING[mid] = item  # store full record including clip_path
                             log.info(f"Restored pending clip: message {mid}")
                         except Exception as e:
                             log.warning(f"Could not restore pending: {e}")
@@ -247,7 +234,14 @@ class ApprovalBot(discord.Client):
         message_id = payload.message_id
         log.info(f"Owner reacted {emoji} on message {message_id}")
 
-        meta = PENDING.pop(message_id, {"title": "unknown clip"})
+        record = PENDING.pop(message_id, {})
+        meta = record.get("meta", {})
+        meta["clip_path"] = record.get("clip_path", "")
+        meta["hashtags"] = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
+        meta["description"] = meta.get("description", "")
+        moment_data = record.get("moment", {})
+        meta["channel"] = meta.get("channel") or moment_data.get("channel", "streamer")
+        meta["trigger_messages"] = meta.get("trigger_messages") or moment_data.get("trigger_messages", [])
         channel = self.get_channel(self.channel_id)
         message = await channel.fetch_message(message_id)
 
