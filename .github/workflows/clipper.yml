@@ -44,7 +44,7 @@ jobs:
 
       - name: Run Clipper
         env:
-          CLIP_PADDING_BEFORE: "20"
+          CLIP_PADDING_BEFORE: "50"
           CLIP_PADDING_AFTER: "10"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python -m agents.clipper
