@@ -42,9 +42,6 @@ jobs:
       - name: Install Python dependencies
         run: pip install faster-whisper python-dotenv anthropic aiohttp streamlink requests google-auth google-auth-oauthlib google-api-python-client
 
-      - name: Download OSRS music tracks
-        run: python3 -c "from agents.music import download_tracks; download_tracks()"
-
       - name: Run Clipper
         env:
           CLIP_PADDING_BEFORE: "20"
