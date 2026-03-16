@@ -30,7 +30,7 @@ log = logging.getLogger("discord_bot")
 
 APPROVE = "✅"
 REJECT  = "❌"
-TITLE_TIMEOUT = 300  # 5 minutes
+TITLE_TIMEOUT = 86400  # 24h
 
 # Tracks pending clips: message_id -> metadata dict
 PENDING: dict[int, dict] = {}
@@ -164,10 +164,10 @@ async def wait_for_title(bot: discord.Client, channel: discord.TextChannel,
             await reply.reply(f"Got it — using your title: **{title}**")
 
     except asyncio.TimeoutError:
-        title = suggestions[0]
         await thread_message.reply(
-            f"⏱️ No reply in 5 minutes — using suggestion 1:\n**{title}**"
+            "⏱️ No reply received — clip is saved but not posted. React ✅ again to retry."
         )
+        return
 
     log.info(f"Title selected: {title}")
     await post_to_platforms(meta, title)
