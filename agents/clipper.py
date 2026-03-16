@@ -37,7 +37,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
         "x": int(w * 0.7708),
-        "y": int(h * 0.0611),
+        "y": int(h * 0.0111),
         "w": int(w * 0.2036),
         "h": int(h * 0.2778),
     },
@@ -332,7 +332,7 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
     out_w = 608
     out_h = 1080
-    cam_h = int(out_h * 0.40)    # 432px — top 40%
+    cam_h = int(out_h * 0.35)    # 432px — top 40%
     content_h = out_h - cam_h    # 648px — bottom 60%
 
     # Extract frame for Claude
