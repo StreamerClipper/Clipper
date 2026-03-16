@@ -188,11 +188,13 @@ def download_tracks():
 
 def mix_music(input_path: Path, output_path: Path,
               trigger_messages: list[str], transcript: str = "") -> bool:
-    """
-    Detect vibe, pick matching OSRS track, and mix it into the clip.
-    The track loops if shorter than the clip.
-    Falls back to no music if anything fails.
-    """
+    # Check if any valid tracks exist (>500KB)
+    valid = [f for f in MUSIC_DIR.glob("*.mp3") if f.stat().st_size > 500_000]
+    if not valid:
+        log.info("No valid music tracks — skipping")
+        shutil.copy(input_path, output_path)
+        return True
+
     # Detect vibe
     vibe = detect_vibe(trigger_messages, transcript)
 
