@@ -260,8 +260,8 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
 
     out_w = 608
     out_h = 1080
-    cam_h = int(out_h * 0.40)    # 432px — top 40%
-    content_h = out_h - cam_h    # 648px — bottom 60%
+    cam_h = int(out_h * 0.30)    # 324px — top 30%
+    content_h = out_h - cam_h    # 756px — bottom 70%
 
     # Extract frame for Claude
     frame_path = input_path.with_suffix(".jpg")
@@ -416,7 +416,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             "BackColour=&H00000000,"
             "Outline=2,"
             "Shadow=1,"
-            "MarginV=160'"
+            "MarginV=170'"
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
