@@ -125,76 +125,8 @@ def record_live_segment(channel: str, duration: int, output_path: Path) -> bool:
 # =============================================================================
 
 def separate_vocals(input_path: Path, output_path: Path) -> bool:
-    """
-    Use Demucs to extract only the vocals/speech track.
-    Removes background music to avoid YouTube Content ID strikes
-    while keeping the streamer's voice and reactions intact.
-    Falls back to original audio if Demucs fails.
-    """
-    log.info("Separating vocals from music with Demucs...")
-    tmp = Path("/tmp/demucs_out")
-    tmp.mkdir(exist_ok=True)
-
-    # Extract audio from video as WAV for Demucs
-    audio_path = Path("/tmp/demucs_input.wav")
-    result = subprocess.run([
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-vn", "-ar", "44100", "-ac", "2",
-        str(audio_path)
-    ], capture_output=True, text=True)
-
-    if result.returncode != 0 or not audio_path.exists():
-        log.warning("Could not extract audio — using original")
-        shutil.copy(input_path, output_path)
-        return True
-
-    # Run Demucs in two-stems mode (vocals vs everything else)
-    result = subprocess.run([
-        "python3", "-m", "demucs",
-        "--two-stems", "vocals",
-        "--out", str(tmp),
-        "-d", "cpu",
-        str(audio_path)
-    ], capture_output=True, text=True, timeout=180)
-
-    if result.returncode != 0:
-        log.warning(f"Demucs failed: {result.stderr[-300:]} — using original audio")
-        shutil.copy(input_path, output_path)
-        return True
-
-    # Find the vocals.wav file Demucs produced
-    vocals_files = list(tmp.glob("**/vocals.wav"))
-    if not vocals_files:
-        log.warning("Demucs produced no vocals file — using original audio")
-        shutil.copy(input_path, output_path)
-        return True
-
-    vocals_path = vocals_files[0]
-    log.info(f"Vocals separated successfully: {vocals_path}")
-
-    # Merge vocals audio back with original video stream
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(input_path),      # original video
-        "-i", str(vocals_path),     # vocals-only audio from Demucs
-        "-map", "0:v",              # video track from original
-        "-map", "1:a",              # audio track from Demucs
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-shortest",
-        str(output_path)
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        log.warning(f"Audio merge failed — using original: {result.stderr[-300:]}")
-        shutil.copy(input_path, output_path)
-        return True
-
-    # Cleanup temp files
-    audio_path.unlink(missing_ok=True)
-    shutil.rmtree(tmp, ignore_errors=True)
-
-    log.info(f"Music removed, vocals kept: {output_path}")
+    """Demucs disabled — using original audio directly."""
+    shutil.copy(input_path, output_path)
     return True
 
 
