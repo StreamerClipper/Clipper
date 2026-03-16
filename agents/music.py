@@ -27,58 +27,34 @@ MUSIC_VOLUME = 0.15  # 15% volume — subtle background, not overpowering
 # =============================================================================
 
 TRACKS = {
-    "hype": [
-        ("Scape_Bold.mp3",      "Epic, triumphant — big moments"),
-        ("Scape_Suspense.mp3",  "Tense, action-packed — combat"),
-        ("Scape_Theme.mp3",     "Classic RS theme — iconic moments"),
-        ("Adventure.mp3",       "Adventurous, upbeat — wins"),
-        ("Fanfare.mp3",         "Victory fanfare — big achievements"),
-    ],
-    "funny": [
-        ("Autumn_Voyage.mp3",   "Quirky, playful — funny moments"),
-        ("Flute_Salad.mp3",     "Whimsical, silly — chaos"),
-        ("Baroque.mp3",         "Comedic, dramatic — ironic moments"),
-        ("Gnome.mp3",           "Light, bouncy — lighthearted"),
-    ],
-    "chill": [
-        ("Harmony.mp3",         "Peaceful, melodic — skilling"),
-        ("Sea_Shanty_2.mp3",    "Classic chill — iconic RS vibe"),
-        ("Morytania.mp3",       "Atmospheric, moody — exploration"),
-        ("Yesteryear.mp3",      "Nostalgic, warm — calm moments"),
-    ],
-    "loot": [
-        ("Fanfare.mp3",         "Victory — big drops"),
-        ("Scape_Bold.mp3",      "Epic — rare items"),
-        ("Newbie_Melody.mp3",   "Cheerful — good fortune"),
-    ],
-    "sad": [
-        ("Lament.mp3",          "Melancholic — bad luck"),
-        ("Sad_Meadow.mp3",      "Sorrowful — deaths/losses"),
-        ("Baroque.mp3",         "Dramatic — unfortunate events"),
-    ],
+    "hype":  [("Fanfare.mp3",    "Victory fanfare — big moments")],
+    "funny": [("Flute_Salad.mp3","Whimsical, silly — chaos")],
+    "chill": [("Flute_Salad.mp3","Light and breezy — calm moments")],
+    "loot":  [("Fanfare.mp3",    "Victory — big drops")],
+    "sad":   [("Sad_Meadow.mp3", "Sorrowful — bad luck")],
 }
 
 # Internet Archive direct download URLs for each track
-# Base URL for the verified Runescape OST Classics collection on Internet Archive
+# Verified URLs from Runescape-OST-Classics on Internet Archive
 _BASE = "https://archive.org/download/Runescape-OST-Classics"
 
 TRACK_URLS = {
-    "Scape_Bold.mp3":     "https://archive.org/download/HamAttack_201609/Scape%20Bold.mp3",
-    "Scape_Suspense.mp3": "https://archive.org/download/HamAttack_201609/Scape%20Suspense.mp3",
-    "Scape_Theme.mp3":    "https://archive.org/download/HamAttack_201609/Scape%20Theme.mp3",
+    "Scape_Main.mp3":     f"{_BASE}/Scape%20Main.mp3",
     "Adventure.mp3":      f"{_BASE}/Adventure.mp3",
     "Fanfare.mp3":        f"{_BASE}/Fanfare.mp3",
     "Autumn_Voyage.mp3":  f"{_BASE}/Autumn%20Voyage.mp3",
     "Flute_Salad.mp3":    f"{_BASE}/Flute%20Salad.mp3",
     "Baroque.mp3":        f"{_BASE}/Baroque.mp3",
-    "Gnome.mp3":          "https://archive.org/download/HamAttack_201609/Gnome.mp3",
     "Harmony.mp3":        f"{_BASE}/Harmony.mp3",
     "Sea_Shanty_2.mp3":   f"{_BASE}/Sea%20Shanty%202.mp3",
-    "Morytania.mp3":      "https://archive.org/download/HamAttack_201609/Morytania.mp3",
     "Yesteryear.mp3":     f"{_BASE}/Yesteryear.mp3",
     "Newbie_Melody.mp3":  f"{_BASE}/Newbie%20Melody.mp3",
-    "Lament.mp3":         "https://archive.org/download/HamAttack_201609/Lament.mp3",
-    "Sad_Meadow.mp3":     "https://archive.org/download/HamAttack_201609/Sad%20Meadow.mp3",
+    "Nightfall.mp3":      f"{_BASE}/Nightfall.mp3",
+    "Medieval.mp3":       f"{_BASE}/Medieval.mp3",
+    "Garden.mp3":         f"{_BASE}/Garden.mp3",
+    "Scape_Sad.mp3":      f"{_BASE}/Scape%20Sad.mp3",
+    "Dark.mp3":           f"{_BASE}/Dark.mp3",
+    "Waterfall.mp3":      f"{_BASE}/Waterfall.mp3",
 }
 
 
@@ -192,7 +168,7 @@ def download_tracks():
 
         log.info(f"Downloading: {filename}...")
         result = subprocess.run(
-            ["curl", "-sSL", "-o", str(dest), url],
+            ["curl", "-sSL", "--max-redirs", "5", "-o", str(dest), url],
             capture_output=True, text=True, timeout=60
         )
         if result.returncode == 0 and dest.exists() and dest.stat().st_size > 10_000:
