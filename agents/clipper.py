@@ -37,9 +37,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 WEBCAM_DEFAULTS = {
     "odablock": lambda w, h: {
         "x": int(w * 0.955),   # nudged right to centre his face
-        "y": 0,
+        "y": 10,
         "w": int(w * 0.320),   # slightly narrower
-        "h": int(h * 0.235),
+        "h": int(h * 0.215),
     },
 }
 
