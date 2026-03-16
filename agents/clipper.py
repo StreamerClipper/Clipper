@@ -480,10 +480,9 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
             "BackColour=&H00000000,"
-            "Outline=3,"
+            "Outline=2,"
             "Shadow=0,"
-            "Alignment=8,"
-            "MarginV=410'"
+            "MarginV=160'"
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
