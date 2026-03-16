@@ -474,16 +474,16 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         "-i", str(input_path),
         "-vf", (
             f"subtitles={srt_path}:force_style='"
-            "FontName=Arial,"
-            "FontSize=22,"
+            "FontName=Impact,"
+            "FontSize=23,"
             "Bold=1,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
             "BackColour=&H00000000,"
             "Outline=3,"
-            "Shadow=0,"
+            "Shadow=1,"
             "Alignment=8,"
-            "MarginV=410'"
+            "MarginV=415'"
         ),
         "-c:v", "libx264",
         "-c:a", "aac",
