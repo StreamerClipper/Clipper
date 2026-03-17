@@ -31,7 +31,7 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install ffmpeg
-        run: sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --fix-missing ffmpeg
 
       - name: Install yt-dlp
         run: |
