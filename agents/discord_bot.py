@@ -234,7 +234,27 @@ class ApprovalBot(discord.Client):
         message_id = payload.message_id
         log.info(f"Owner reacted {emoji} on message {message_id}")
 
-        record = PENDING.pop(message_id, {})
+        record = PENDING.pop(message_id, None)
+        log.info(f"DEBUG record keys: {list(record.keys()) if record else 'NONE'}")
+
+        if not record:
+            # Bot restarted — look up in discord_pending.jsonl
+            pending_path = Path("output/discord_pending.jsonl")
+            if pending_path.exists():
+                for line in pending_path.read_text().strip().splitlines():
+                    if line.strip():
+                        try:
+                            item = json.loads(line)
+                            if str(item.get("message_id")) == str(message_id):
+                                record = item
+                                log.info(f"Found record in pending file: {item.get('clip_path')}")
+                                break
+                        except Exception:
+                            pass
+
+        record = record or {}
+        log.info(f"DEBUG clip_path: {record.get('clip_path', 'MISSING')}")
+
         meta = record.get("meta", {})
         meta["clip_path"] = record.get("clip_path", "")
         meta["hashtags"] = meta.get("hashtags", ["#kick", "#clips", "#gaming"])
