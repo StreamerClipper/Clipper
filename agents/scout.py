@@ -1,13 +1,13 @@
 """
-agents/scout.py — Agent 1: Scout + Recorder (combined)
+agents/scout.py — Agent 1: Scout + On-Demand Recorder
 
 Runs as a single always-on task on PythonAnywhere.
-Two async tasks run concurrently:
-  1. Scout — monitors Kick chat, detects hype spikes
-  2. Recorder — continuously records stream in 10s segments (rolling 5min buffer)
 
-When hype is detected, the exact timestamp is used to extract a clip
-from the local buffer — no spin-up delay, no missed moments.
+Smart recording strategy:
+  - At 67% of hype threshold → start recording immediately
+  - At 100% threshold → mark peak, record 10s more, then clip
+  - If hype dies within 30s without reaching 100% → abort, delete recording
+  - This captures the exact hype moment with no delay
 
 Run:
     cd /home/StreamerClipper/clipbot && python -m agents.scout --channel odablock
@@ -20,6 +20,7 @@ import base64
 import signal
 import subprocess
 import shutil
+import sys
 from collections import deque, Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,12 +45,10 @@ KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 DISCORD_LOG_CHANNEL = "1482831221347057826"
 
-# Recorder settings
-BUFFER_MINUTES = 5
-SEGMENT_SECONDS = 10
-MAX_SEGMENTS = (BUFFER_MINUTES * 60) // SEGMENT_SECONDS  # 30 segments
-CLIP_DURATION = 30
-CLIP_PADDING_BEFORE = 20
+# Recording settings
+CLIP_AFTER_PEAK = 10        # seconds to record after hype peak
+RECORDING_TIMEOUT = 30      # seconds to wait for peak before aborting recording
+CLIPS_DIR = Path("output/clips")
 
 
 # =============================================================================
@@ -91,7 +90,7 @@ def get_chatroom_id(channel_slug: str) -> tuple[int, str | None]:
 # GitHub helper
 # =============================================================================
 
-async def push_moment_to_github(moment: HypeMoment, session: aiohttp.ClientSession):
+async def push_moment_to_github(moment: dict, session: aiohttp.ClientSession):
     if not settings.GITHUB_TOKEN or not settings.GITHUB_REPO:
         log.warning("GITHUB_TOKEN or GITHUB_REPO not set — skipping GitHub push")
         return
@@ -114,12 +113,12 @@ async def push_moment_to_github(moment: HypeMoment, session: aiohttp.ClientSessi
             log.error(f"GitHub fetch failed: {resp.status}")
             return
 
-    new_line = json.dumps(moment.to_dict()) + "\n"
+    new_line = json.dumps(moment) + "\n"
     updated_content = existing_content + new_line
     encoded = base64.b64encode(updated_content.encode("utf-8")).decode("utf-8")
 
     payload = {
-        "message": f"[scout] hype moment: {moment.channel} @ {moment.peak_offset:.0f}s",
+        "message": f"[scout] hype moment: {moment['channel']} @ {moment.get('peak_offset', 0):.0f}s",
         "content": encoded,
     }
     if sha:
@@ -127,133 +126,128 @@ async def push_moment_to_github(moment: HypeMoment, session: aiohttp.ClientSessi
 
     async with session.put(url, headers=headers, json=payload) as resp:
         if resp.status in (200, 201):
-            log.info("Pushed moment to GitHub -> triggers Clipper workflow")
+            log.info("Pushed to GitHub — Clipper workflow triggered")
         else:
             body = await resp.text()
-            log.error(f"GitHub push failed ({resp.status}): {body}")
+            log.error(f"GitHub push failed ({resp.status}): {body[:200]}")
 
 
 # =============================================================================
-# Rolling buffer recorder
+# On-demand recorder
 # =============================================================================
 
-class StreamRecorder:
+class OnDemandRecorder:
+    """
+    Records only when hype is building.
+    Starts at 67% threshold, stops after peak + CLIP_AFTER_PEAK seconds.
+    Aborts if peak never reached within RECORDING_TIMEOUT seconds.
+    """
+
     def __init__(self, channel: str):
         self.channel = channel
-        self.buffer_dir = Path(f"/tmp/clipbot_buffer/{channel}")
-        self.clips_dir = Path("output/clips")
-        self.buffer_dir.mkdir(parents=True, exist_ok=True)
-        self.clips_dir.mkdir(parents=True, exist_ok=True)
-        self._segment_index = 0
-        self._running = False
-        self._stream_start: datetime | None = None
+        self._process: subprocess.Popen | None = None
+        self._recording_path: Path | None = None
+        self._recording = False
+        self._start_time: datetime | None = None
+        self._timeout_task: asyncio.Task | None = None
+        CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def _clean_buffer(self):
-        segments = sorted(self.buffer_dir.glob("*.ts"))
-        if len(segments) > MAX_SEGMENTS:
-            for f in segments[:len(segments) - MAX_SEGMENTS]:
-                f.unlink(missing_ok=True)
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
 
-    def extract_clip(self, peak_offset: float, timestamp: str) -> Path | None:
-        """Extract a clip from the buffer around the hype peak offset."""
-        start_offset = max(0, peak_offset - CLIP_PADDING_BEFORE)
-        start_seg = int(start_offset // SEGMENT_SECONDS)
-        end_seg = int((peak_offset + (CLIP_DURATION - CLIP_PADDING_BEFORE)) // SEGMENT_SECONDS) + 1
+    def start(self) -> Path | None:
+        """Start recording. Returns the output path."""
+        if self._recording:
+            log.debug("Already recording")
+            return self._recording_path
 
-        segments = sorted(self.buffer_dir.glob("*.ts"))
-        if not segments:
-            log.warning("Buffer empty — no segments to clip from")
-            return None
-
-        # Match by segment index
-        target = []
-        for seg in segments:
-            try:
-                idx = int(seg.stem)
-                if start_seg <= idx <= end_seg:
-                    target.append(seg)
-            except ValueError:
-                continue
-
-        if not target:
-            log.warning(f"No segments for offset {peak_offset:.0f}s — using latest segments")
-            target = segments[-3:]  # fallback: last 30s
-
-        output_path = self.clips_dir / f"{self.channel}_{timestamp}_raw.mp4"
-        concat_file = Path(f"/tmp/concat_{timestamp}.txt")
-
-        with open(concat_file, "w") as f:
-            for seg in sorted(target):
-                f.write(f"file '{seg}'\n")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        output_path = CLIPS_DIR / f"{self.channel}_{timestamp}_raw.ts"
+        self._recording_path = output_path
+        self._start_time = datetime.now(timezone.utc)
 
         cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(concat_file),
-            "-t", str(CLIP_DURATION),
-            "-c:v", "libx264", "-c:a", "aac", "-preset", "fast",
-            str(output_path)
+            "streamlink",
+            "--stdout",
+            "--stream-timeout", "120",
+            "--stream-segment-timeout", "10",
+            f"https://kick.com/{self.channel}",
+            "best",
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        concat_file.unlink(missing_ok=True)
 
-        if result.returncode != 0 or not output_path.exists():
-            log.error(f"Clip extraction failed: {result.stderr[-300:]}")
+        try:
+            with open(output_path, "wb") as f:
+                self._process = subprocess.Popen(
+                    cmd, stdout=f, stderr=subprocess.DEVNULL
+                )
+            self._recording = True
+            log.info(f"🎬 Recording started: {output_path.name}")
+            return output_path
+        except Exception as e:
+            log.error(f"Failed to start recording: {e}")
             return None
 
-        size = output_path.stat().st_size
-        if size < 50_000:
-            output_path.unlink(missing_ok=True)
-            log.error(f"Extracted clip too small ({size} bytes)")
+    def stop(self) -> Path | None:
+        """Stop recording and return the file path if valid."""
+        if not self._recording:
             return None
 
-        log.info(f"Clip extracted from buffer: {output_path} ({size/1024/1024:.1f}MB)")
-        return output_path
+        self._recording = False
 
-    def cleanup(self):
-        """Delete buffer on shutdown."""
-        if self.buffer_dir.exists():
-            shutil.rmtree(self.buffer_dir)
-            log.info("Buffer cleaned up")
-
-    async def run(self):
-        """Continuously record stream in segments."""
-        self._running = True
-        self._stream_start = datetime.now(timezone.utc)
-        log.info(f"Recorder started for #{self.channel}")
-
-        while self._running:
-            seg_path = self.buffer_dir / f"{self._segment_index:04d}.ts"
-            cmd = [
-                "streamlink",
-                "--stdout",
-                "--hls-duration", str(SEGMENT_SECONDS),
-                "--stream-timeout", str(SEGMENT_SECONDS + 10),
-                f"https://kick.com/{self.channel}",
-                "best",
-            ]
+        if self._process:
             try:
-                with open(seg_path, "wb") as f:
-                    subprocess.run(
-                        cmd, stdout=f, stderr=subprocess.DEVNULL,
-                        timeout=SEGMENT_SECONDS + 15
-                    )
-            except subprocess.TimeoutExpired:
-                pass
-            except Exception as e:
-                log.warning(f"Recorder segment error: {e}")
-                await asyncio.sleep(5)
-                continue
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
 
-            if seg_path.exists() and seg_path.stat().st_size > 10_000:
-                self._clean_buffer()
-                self._segment_index += 1
-            else:
-                seg_path.unlink(missing_ok=True)
-                log.debug("Empty segment — stream offline?")
-                await asyncio.sleep(10)
+        path = self._recording_path
+        self._recording_path = None
 
-            await asyncio.sleep(0)  # yield to event loop
+        if path and path.exists():
+            size = path.stat().st_size
+            if size < 50_000:
+                log.warning(f"Recording too small ({size} bytes) — discarding")
+                path.unlink(missing_ok=True)
+                return None
+            log.info(f"Recording stopped: {path.name} ({size/1024/1024:.1f}MB)")
+            return path
+
+        return None
+
+    def abort(self):
+        """Abort recording and delete the file."""
+        if not self._recording:
+            return
+        log.info("Recording aborted — hype died before peak")
+        self._recording = False
+
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+
+        if self._recording_path:
+            self._recording_path.unlink(missing_ok=True)
+            log.info(f"Deleted aborted recording")
+            self._recording_path = None
+
+    def recording_duration(self) -> float:
+        """How long we've been recording in seconds."""
+        if not self._recording or not self._start_time:
+            return 0.0
+        return (datetime.now(timezone.utc) - self._start_time).total_seconds()
 
 
 # =============================================================================
@@ -329,18 +323,19 @@ class HypeDetector:
 
 
 # =============================================================================
-# Combined Scout + Recorder
+# Combined Scout + On-Demand Recorder
 # =============================================================================
 
 class KickChatScout:
     def __init__(self, channel_slug: str):
         self.channel_slug = channel_slug
         self.detector = HypeDetector()
-        self.recorder = StreamRecorder(channel_slug)
+        self.recorder = OnDemandRecorder(channel_slug)
         self._stream_start: datetime | None = None
         self._stream_id: str | None = None
         self._moments: list[HypeMoment] = []
         self._building_alerted = False
+        self._timeout_task: asyncio.Task | None = None
 
         Path(settings.LOGS_DIR).mkdir(parents=True, exist_ok=True)
         self._local_log = Path(settings.LOGS_DIR) / f"{channel_slug}_moments.jsonl"
@@ -349,6 +344,17 @@ class KickChatScout:
         if self._stream_start is None:
             return 0.0
         return (now - self._stream_start).total_seconds()
+
+    async def _abort_timeout(self):
+        """Wait RECORDING_TIMEOUT seconds, then abort if no peak reached."""
+        await asyncio.sleep(RECORDING_TIMEOUT)
+        if self.recorder.is_recording:
+            log.info(f"No peak reached in {RECORDING_TIMEOUT}s — aborting recording")
+            discord_log(
+                f"⚡ Hype on #{self.channel_slug} died before peak — recording aborted"
+            )
+            self.recorder.abort()
+            self._building_alerted = False
 
     async def run(self):
         log.info(f"Fetching channel info for '{self.channel_slug}'...")
@@ -366,7 +372,7 @@ class KickChatScout:
 
         if stream_id:
             log.info(f"Channel is LIVE - stream ID: {stream_id}")
-            discord_log(f"🟢 **Scout+Recorder connected** to #{self.channel_slug}")
+            discord_log(f"🟢 **Scout connected** to #{self.channel_slug} — on-demand recording ready")
         else:
             log.warning("Channel is OFFLINE - listening, waiting for stream...")
             discord_log(f"⚪ **#{self.channel_slug} is offline** — waiting...")
@@ -377,13 +383,6 @@ class KickChatScout:
             f"cooldown={settings.HYPE_COOLDOWN_SECONDS}s"
         )
 
-        # Run Scout (WebSocket) and Recorder concurrently
-        await asyncio.gather(
-            self._run_chat(chatroom_id),
-            self.recorder.run(),
-        )
-
-    async def _run_chat(self, chatroom_id: int):
         async with websockets.connect(KICK_WS_URL) as ws:
             await ws.send(json.dumps({
                 "event": "pusher:subscribe",
@@ -419,20 +418,31 @@ class KickChatScout:
         )
 
         rate = self.detector.push(msg)
-        log.debug(f"[{msg.username}] {msg.content}  ({rate:.1f} msg/s)")
-
         msgs_in_window = int(rate * self.detector.window)
         build_threshold = int(settings.HYPE_THRESHOLD * 0.67)
 
+        # Start recording at 67% threshold
         if msgs_in_window >= build_threshold and not self._building_alerted:
             self._building_alerted = True
             discord_log(
                 f"⚡ **Hype building** on #{self.channel_slug} — "
-                f"`{msgs_in_window}/{settings.HYPE_THRESHOLD}` msgs in {settings.HYPE_WINDOW_SECONDS}s"
+                f"`{msgs_in_window}/{settings.HYPE_THRESHOLD}` msgs — recording started!"
             )
-        elif msgs_in_window < build_threshold:
+
+            # Start on-demand recording
+            if not self.recorder.is_recording:
+                self.recorder.start()
+
+                # Start abort timeout
+                if self._timeout_task:
+                    self._timeout_task.cancel()
+                self._timeout_task = asyncio.create_task(self._abort_timeout())
+
+        elif msgs_in_window < build_threshold // 2:
+            # Hype dropped well below build threshold — reset alert
             self._building_alerted = False
 
+        # Check for full hype trigger
         if self.detector.should_trigger(rate, now):
             offset = self._offset(now)
             moment = self.detector.trigger(
@@ -443,6 +453,11 @@ class KickChatScout:
             )
             self._moments.append(moment)
             self._building_alerted = False
+
+            # Cancel abort timeout — peak reached!
+            if self._timeout_task:
+                self._timeout_task.cancel()
+                self._timeout_task = None
 
             log.info(
                 f"\n{'='*50}\n"
@@ -459,72 +474,33 @@ class KickChatScout:
                 f"Rate: `{moment.message_rate:.0f}` msgs/{settings.HYPE_WINDOW_SECONDS}s\n"
                 f"Offset: `{offset:.0f}s` into stream\n"
                 f"Sample: `{sample}`\n"
-                f"⏳ Extracting clip from buffer..."
+                f"⏳ Recording {CLIP_AFTER_PEAK}s more then clipping..."
             )
 
-            # Extract clip from local buffer immediately
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            clip_path = self.recorder.extract_clip(offset, timestamp)
+            # Record for CLIP_AFTER_PEAK more seconds then stop
+            await asyncio.sleep(CLIP_AFTER_PEAK)
+
+            # Stop recording and get clip
+            clip_path = self.recorder.stop()
 
             if clip_path:
-                log.info(f"Clip extracted from buffer: {clip_path}")
+                rec_duration = (datetime.now(timezone.utc) - self.recorder._start_time).total_seconds() if self.recorder._start_time else 0
+                log.info(f"Clip captured: {clip_path.name} — pushing to GitHub")
+
                 moment_dict = moment.to_dict()
                 moment_dict["local_clip_path"] = str(clip_path)
 
-                # Save locally
                 with open(self._local_log, "a") as f:
                     f.write(json.dumps(moment_dict) + "\n")
 
-                # Push to GitHub to trigger Clipper
-                await push_moment_to_github_with_clip(moment_dict, session)
+                await push_moment_to_github(moment_dict, session)
+                discord_log(f"✅ Clip ready — processing started!")
             else:
-                log.warning("Buffer extraction failed — falling back to live recording")
+                log.warning("Recording failed — falling back to live recording via GitHub")
+                moment_dict = moment.to_dict()
                 with open(self._local_log, "a") as f:
-                    f.write(json.dumps(moment.to_dict()) + "\n")
-                await push_moment_to_github(moment, session)
-
-
-async def push_moment_to_github_with_clip(moment: dict, session: aiohttp.ClientSession):
-    """Push moment including local clip path to GitHub."""
-    if not settings.GITHUB_TOKEN or not settings.GITHUB_REPO:
-        log.warning("GITHUB_TOKEN or GITHUB_REPO not set — skipping")
-        return
-
-    headers = {
-        "Authorization": f"token {settings.GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    file_path = "output/pending_moments.jsonl"
-    url = f"{GITHUB_API}/repos/{settings.GITHUB_REPO}/contents/{file_path}"
-
-    existing_content = ""
-    sha = None
-    async with session.get(url, headers=headers) as resp:
-        if resp.status == 200:
-            data = await resp.json()
-            sha = data["sha"]
-            existing_content = base64.b64decode(data["content"]).decode("utf-8")
-        elif resp.status != 404:
-            log.error(f"GitHub fetch failed: {resp.status}")
-            return
-
-    new_line = json.dumps(moment) + "\n"
-    updated_content = existing_content + new_line
-    encoded = base64.b64encode(updated_content.encode("utf-8")).decode("utf-8")
-
-    payload = {
-        "message": f"[scout] clip ready: {moment['channel']} @ {moment['peak_offset']:.0f}s",
-        "content": encoded,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    async with session.put(url, headers=headers, json=payload) as resp:
-        if resp.status in (200, 201):
-            log.info("Pushed to GitHub with clip path — Clipper workflow triggered")
-        else:
-            body = await resp.text()
-            log.error(f"GitHub push failed ({resp.status}): {body}")
+                    f.write(json.dumps(moment_dict) + "\n")
+                await push_moment_to_github(moment_dict, session)
 
 
 # =============================================================================
@@ -543,19 +519,19 @@ async def main(channel: str, debug: bool = False):
         try:
             await scout.run()
         except asyncio.CancelledError:
-            scout.recorder.cleanup()
+            scout.recorder.abort()
             break
         except Exception as e:
             log.warning(f"Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **Scout crashed** — reconnecting in 30s...\n`{e}`")
-            scout.recorder.cleanup()
+            scout.recorder.abort()
 
         log.info("Waiting 30s before reconnecting...")
         await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Kick hype scout + recorder")
+    parser = argparse.ArgumentParser(description="Kick hype scout + on-demand recorder")
     parser.add_argument("--channel", required=True, help="Kick channel slug")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
