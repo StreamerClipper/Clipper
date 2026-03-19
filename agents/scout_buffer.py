@@ -94,7 +94,7 @@ def get_hls_url(channel_slug: str) -> str | None:
     """Get the raw HLS playlist URL using streamlink --url-only."""
     try:
         result = subprocess.run(
-            ["streamlink", "--url-only", f"https://kick.com/{channel_slug}", "best"],
+            ["streamlink", "--stream-url", f"https://kick.com/{channel_slug}", "best"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
