@@ -91,10 +91,10 @@ def get_chatroom_id(channel_slug: str) -> tuple[int, str | None]:
 
 
 def get_hls_url(channel_slug: str) -> str | None:
-    """Get the raw HLS playlist URL using streamlink --url-only."""
+    """Get the raw HLS playlist URL using streamlink --stream-url."""
     try:
         result = subprocess.run(
-            ["streamlink", "--url-only", f"https://kick.com/{channel_slug}", "best"],
+            ["streamlink", "--stream-url", f"https://kick.com/{channel_slug}", "best"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
@@ -102,7 +102,7 @@ def get_hls_url(channel_slug: str) -> str | None:
             if url.startswith("http"):
                 log.info(f"HLS URL obtained: {url[:80]}...")
                 return url
-        log.warning(f"streamlink --url-only failed: {result.stderr[-200:]}")
+        log.warning(f"streamlink --stream-url failed: {result.stderr[-200:]}")
         return None
     except Exception as e:
         log.warning(f"Failed to get HLS URL: {e}")
