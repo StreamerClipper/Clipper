@@ -493,7 +493,12 @@ class KickChatScout:
         elif msgs_in_window < build_threshold // 2:
             self._building_alerted = False
 
-        if self.detector.should_trigger(rate, now):
+        # Manual trigger keywords — fire clip immediately
+        MANUAL_TRIGGERS = ["go for it mr streamer", "!clip", "clipbot"]
+        content_lower = msg.content.lower()
+        manual_triggered = any(kw in content_lower for kw in MANUAL_TRIGGERS)
+
+        if manual_triggered or self.detector.should_trigger(rate, now):
             offset = self._offset(now)
             moment = self.detector.trigger(
                 channel=self.channel_slug,
