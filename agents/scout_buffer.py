@@ -248,13 +248,14 @@ class RollingBuffer:
         segment_pattern = str(self.buffer_dir / "seg_%06d.ts")
 
         cmd = [
-            "ffmpeg", "-y",
-            "-i", self._hls_url,
-            "-c", "copy",
-            "-f", "segment",
-            "-segment_time", str(SEGMENT_DURATION),
-            "-reset_timestamps", "1",
-            segment_pattern
+        "ffmpeg", "-y",
+        "-live_start_index", "-1",      # always start from latest segment
+        "-i", self._hls_url,
+        "-c", "copy",
+        "-f", "segment",
+        "-segment_time", str(SEGMENT_DURATION),
+        "-reset_timestamps", "1",
+        segment_pattern
         ]
 
         # Start ffmpeg as background process
