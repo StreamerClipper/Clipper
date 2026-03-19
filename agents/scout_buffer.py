@@ -94,7 +94,7 @@ def get_hls_url(channel_slug: str) -> str | None:
     """Get the raw HLS playlist URL using streamlink --url-only."""
     try:
         result = subprocess.run(
-            ["streamlink", "--stream-url", f"https://kick.com/{channel_slug}", "best"],
+            ["streamlink", "--url-only", f"https://kick.com/{channel_slug}", "best"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
@@ -122,42 +122,8 @@ async def push_moment_to_github(moment: dict, session: aiohttp.ClientSession):
         "Authorization": f"token {settings.GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json",
     }
-    base = f"{GITHUB_API}/repos/{settings.GITHUB_REPO}/contents"
-
-    # Upload clip file to GitHub if it exists locally
-    local_clip = moment.get("local_clip_path", "")
-    if local_clip and Path(local_clip).exists():
-        clip_path = Path(local_clip)
-        log.info(f"Uploading clip to GitHub: {clip_path.name} ({clip_path.stat().st_size/1024/1024:.1f}MB)")
-
-        with open(clip_path, "rb") as f:
-            clip_encoded = base64.b64encode(f.read()).decode("utf-8")
-
-        clip_url = f"{base}/{local_clip}"
-        clip_payload = {
-            "message": f"[scout] clip: {clip_path.name}",
-            "content": clip_encoded,
-        }
-
-        # Check if file already exists on GitHub
-        async with session.get(clip_url, headers=headers) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                clip_payload["sha"] = data["sha"]
-
-        async with session.put(clip_url, headers=headers, json=clip_payload) as resp:
-            if resp.status in (200, 201):
-                log.info(f"Clip uploaded to GitHub: {local_clip}")
-                # Delete local copy after upload
-                clip_path.unlink(missing_ok=True)
-                log.info(f"Deleted local clip: {clip_path.name}")
-            else:
-                body = await resp.text()
-                log.error(f"Clip upload failed ({resp.status}): {body[:200]}")
-
-    # Push moment to pending_moments.jsonl
     file_path = "output/pending_moments.jsonl"
-    url = f"{base}/{file_path}"
+    url = f"{GITHUB_API}/repos/{settings.GITHUB_REPO}/contents/{file_path}"
 
     existing_content = ""
     sha = None
@@ -267,7 +233,7 @@ class RollingBuffer:
         return output_path
 
     async def start(self, hls_url: str):
-        """Start downloading HLS segments in background."""
+        """Start one continuous ffmpeg process writing sequential segments."""
         self._hls_url = hls_url
         self._running = True
         log.info(f"Rolling buffer started for #{self.channel}")
@@ -275,65 +241,73 @@ class RollingBuffer:
 
     async def _download_loop(self):
         """
-        Continuously download HLS segments.
-        Uses ffmpeg -c copy (no re-encoding) — very lightweight.
-        Each segment is SEGMENT_DURATION seconds long.
+        Single continuous ffmpeg process using segment muxer.
+        Writes seg_000000.ts, seg_000001.ts etc in sequence.
+        Proper continuous footage — no gaps or restarts.
         """
-        seg_index = 0
-        consecutive_failures = 0
+        segment_pattern = str(self.buffer_dir / "seg_%06d.ts")
 
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", self._hls_url,
+            "-c", "copy",
+            "-f", "segment",
+            "-segment_time", str(SEGMENT_DURATION),
+            "-reset_timestamps", "1",
+            segment_pattern
+        ]
+
+        # Start ffmpeg as background process
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            log.info(f"ffmpeg segment process started (PID {self._process.pid})")
+        except Exception as e:
+            log.error(f"Failed to start ffmpeg: {e}")
+            return
+
+        # Watchdog — clean old segments and monitor process
         while self._running:
-            seg_path = self.buffer_dir / f"seg_{seg_index:06d}.ts"
+            await asyncio.sleep(SEGMENT_DURATION)
+            self._clean_old_segments()
 
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", self._hls_url,
-                "-c", "copy",                          # no re-encoding
-                "-t", str(SEGMENT_DURATION),           # segment duration
-                "-avoid_negative_ts", "make_zero",
-                str(seg_path)
-            ]
+            segs = self.get_buffered_segments()
+            if segs:
+                log.debug(f"Buffer: {len(segs)} segments, latest: {segs[-1].name} ({segs[-1].stat().st_size/1024:.0f}KB)")
 
-            try:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        cmd, capture_output=True, text=True,
-                        timeout=SEGMENT_DURATION + 15
-                    )
+            # Check if process died
+            if self._process and self._process.returncode is not None:
+                log.warning("ffmpeg segment process died — refreshing HLS URL")
+                new_url = await asyncio.get_running_loop().run_in_executor(
+                    None, get_hls_url, self.channel
                 )
-
-                if seg_path.exists() and seg_path.stat().st_size > 10_000:
-                    log.debug(f"Segment {seg_index}: {seg_path.stat().st_size/1024:.0f}KB")
-                    self._segment_count += 1
-                    self._clean_old_segments()
-                    consecutive_failures = 0
-                    seg_index += 1
+                if new_url:
+                    self._hls_url = new_url
+                    self._process = await asyncio.create_subprocess_exec(
+                        *["ffmpeg", "-y", "-i", new_url, "-c", "copy",
+                          "-f", "segment", "-segment_time", str(SEGMENT_DURATION),
+                          "-reset_timestamps", "1", segment_pattern],
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    log.info(f"ffmpeg restarted (PID {self._process.pid})")
                 else:
-                    log.debug(f"Empty segment {seg_index} — stream may be offline")
-                    seg_path.unlink(missing_ok=True)
-                    consecutive_failures += 1
-                    if consecutive_failures >= 3:
-                        log.warning("3 consecutive empty segments — refreshing HLS URL")
-                        consecutive_failures = 0
-                        # Refresh HLS URL
-                        new_url = await asyncio.get_running_loop().run_in_executor(
-                            None, get_hls_url, self.channel
-                        )
-                        if new_url:
-                            self._hls_url = new_url
-                        await asyncio.sleep(10)
-
-            except Exception as e:
-                log.warning(f"Segment download error: {e}")
-                seg_path.unlink(missing_ok=True)
-                await asyncio.sleep(5)
+                    await asyncio.sleep(30)
 
     def stop(self):
         """Stop the buffer — keep files for inspection."""
         self._running = False
+        if self._process:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
         log.info(f"Buffer stopped — files kept at {self.buffer_dir}")
+
+
 
 
 # =============================================================================
@@ -521,24 +495,6 @@ class KickChatScout:
         if self.detector.should_trigger(rate, now):
             offset = self._offset(now)
             moment = self.detector.trigger(
-                # Log exact timing for manual verification
-                trigger_time = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                top_msgs = moment.trigger_messages[-3:]
-                log.info(
-                    f"\n{'='*50}\n"
-                    f"  TRIGGER TIME : {trigger_time}\n"
-                    f"  STREAM OFFSET: {offset:.1f}s into stream\n"
-                    f"  TOP 3 MSGS   :\n"
-                    + "\n".join(f"    → {m}" for m in top_msgs) +
-                    f"\n{'='*50}"
-                )
-                discord_log(
-                    f"🔥 **HYPE TRIGGERED** on #{self.channel_slug}\n"
-                    f"🕐 Time: `{trigger_time}`\n"
-                    f"⏱️ Stream offset: `{offset:.1f}s`\n"
-                    f"💬 Last 3 messages:\n"
-                    + "\n".join(f"> {m}" for m in top_msgs)
-                )
                 channel=self.channel_slug,
                 stream_id=self._stream_id or "unknown",
                 offset=offset,
@@ -611,7 +567,7 @@ async def main(channel: str, debug: bool = False):
         except Exception as e:
             log.warning(f"Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **Scout crashed** — reconnecting in 30s...\n`{e}`")
-            #scout.buffer.stop()
+            scout.buffer.stop()
 
         log.info("Waiting 30s before reconnecting...")
         await asyncio.sleep(30)
