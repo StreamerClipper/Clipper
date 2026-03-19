@@ -487,14 +487,8 @@ def process_moment(moment: dict) -> Path | None:
     elif not record_live_segment(channel, DURATION, raw):
         return None
 
-    # Smart trim
-    try:
-        from agents.trimmer import trim_clip
-        peak_in_clip = float(os.getenv("CLIP_PADDING_BEFORE", 50))
-        trim_clip(raw, trimmed, peak_offset=peak_in_clip)
-    except Exception as e:
-        log.warning(f"Trim failed: {e} — using full clip")
-        shutil.copy(raw, trimmed)
+    # Smart trim disabled
+    shutil.copy(raw, trimmed)
     raw.unlink(missing_ok=True)
 
     # Vocals (disabled)
