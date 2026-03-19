@@ -508,14 +508,8 @@ def process_moment(moment: dict) -> Path | None:
         log.warning(f"Music mix failed: {e} — skipping")
         shutil.copy(cropped, scored)
 
-    # Sound effects
-    try:
-        from agents.sfx import mix_sfx
-        trigger_messages = moment.get("trigger_messages", [])
-        mix_sfx(scored, sfx_out, trigger_messages)
-    except Exception as e:
-        log.warning(f"SFX mix failed: {e} — skipping")
-        shutil.copy(scored, sfx_out)
+    # SFX disabled — timings off
+    shutil.copy(scored, sfx_out)
 
     # Captions
     if not add_captions(sfx_out, final):
