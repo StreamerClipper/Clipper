@@ -122,8 +122,42 @@ async def push_moment_to_github(moment: dict, session: aiohttp.ClientSession):
         "Authorization": f"token {settings.GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json",
     }
+    base = f"{GITHUB_API}/repos/{settings.GITHUB_REPO}/contents"
+
+    # Upload clip file to GitHub if it exists locally
+    local_clip = moment.get("local_clip_path", "")
+    if local_clip and Path(local_clip).exists():
+        clip_path = Path(local_clip)
+        log.info(f"Uploading clip to GitHub: {clip_path.name} ({clip_path.stat().st_size/1024/1024:.1f}MB)")
+
+        with open(clip_path, "rb") as f:
+            clip_encoded = base64.b64encode(f.read()).decode("utf-8")
+
+        clip_url = f"{base}/{local_clip}"
+        clip_payload = {
+            "message": f"[scout] clip: {clip_path.name}",
+            "content": clip_encoded,
+        }
+
+        # Check if file already exists on GitHub
+        async with session.get(clip_url, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                clip_payload["sha"] = data["sha"]
+
+        async with session.put(clip_url, headers=headers, json=clip_payload) as resp:
+            if resp.status in (200, 201):
+                log.info(f"Clip uploaded to GitHub: {local_clip}")
+                # Delete local copy after upload
+                clip_path.unlink(missing_ok=True)
+                log.info(f"Deleted local clip: {clip_path.name}")
+            else:
+                body = await resp.text()
+                log.error(f"Clip upload failed ({resp.status}): {body[:200]}")
+
+    # Push moment to pending_moments.jsonl
     file_path = "output/pending_moments.jsonl"
-    url = f"{GITHUB_API}/repos/{settings.GITHUB_REPO}/contents/{file_path}"
+    url = f"{base}/{file_path}"
 
     existing_content = ""
     sha = None
@@ -297,11 +331,9 @@ class RollingBuffer:
                 await asyncio.sleep(5)
 
     def stop(self):
-        """Stop the buffer and clean up."""
+        """Stop the buffer — keep files for inspection."""
         self._running = False
-        if self.buffer_dir.exists():
-            shutil.rmtree(self.buffer_dir)
-            log.info("Buffer cleaned up")
+        log.info(f"Buffer stopped — files kept at {self.buffer_dir}")
 
 
 # =============================================================================
@@ -561,7 +593,7 @@ async def main(channel: str, debug: bool = False):
         except Exception as e:
             log.warning(f"Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **Scout crashed** — reconnecting in 30s...\n`{e}`")
-            scout.buffer.stop()
+            #scout.buffer.stop()
 
         log.info("Waiting 30s before reconnecting...")
         await asyncio.sleep(30)
