@@ -521,6 +521,24 @@ class KickChatScout:
         if self.detector.should_trigger(rate, now):
             offset = self._offset(now)
             moment = self.detector.trigger(
+                # Log exact timing for manual verification
+                trigger_time = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                top_msgs = moment.trigger_messages[-3:]
+                log.info(
+                    f"\n{'='*50}\n"
+                    f"  TRIGGER TIME : {trigger_time}\n"
+                    f"  STREAM OFFSET: {offset:.1f}s into stream\n"
+                    f"  TOP 3 MSGS   :\n"
+                    + "\n".join(f"    → {m}" for m in top_msgs) +
+                    f"\n{'='*50}"
+                )
+                discord_log(
+                    f"🔥 **HYPE TRIGGERED** on #{self.channel_slug}\n"
+                    f"🕐 Time: `{trigger_time}`\n"
+                    f"⏱️ Stream offset: `{offset:.1f}s`\n"
+                    f"💬 Last 3 messages:\n"
+                    + "\n".join(f"> {m}" for m in top_msgs)
+                )
                 channel=self.channel_slug,
                 stream_id=self._stream_id or "unknown",
                 offset=offset,
