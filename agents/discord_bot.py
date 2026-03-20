@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 
 import discord
 
@@ -212,6 +213,99 @@ class ApprovalBot(discord.Client):
                             log.warning(f"Could not restore pending: {e}")
         else:
             log.error(f"Channel {self.channel_id} not found — check DISCORD_CHANNEL_ID")
+
+    async def on_message(self, message: discord.Message):
+        """Handle !hype commands to adjust detection settings."""
+        if message.author.bot:
+            return
+        if message.channel.id != self.channel_id:
+            return
+
+        content = message.content.strip()
+
+        # !hype status — show current settings
+        if content == "!hype status":
+            env_path = Path(".env")
+            settings_map = {}
+            for line in env_path.read_text().splitlines():
+                for key in ["HYPE_WINDOW_SECONDS", "HYPE_THRESHOLD", "HYPE_COOLDOWN_SECONDS"]:
+                    if line.startswith(f"{key}="):
+                        settings_map[key] = line.split("=", 1)[1].strip()
+            await message.channel.send(
+                f"⚙️ **Hype Settings:**\n"
+                f"`HYPE_WINDOW_SECONDS` = {settings_map.get('HYPE_WINDOW_SECONDS', '?')}\n"
+                f"`HYPE_THRESHOLD` = {settings_map.get('HYPE_THRESHOLD', '?')}\n"
+                f"`HYPE_COOLDOWN_SECONDS` = {settings_map.get('HYPE_COOLDOWN_SECONDS', '?')}"
+            )
+            return
+
+        # !hype set KEY VALUE
+        if content.startswith("!hype set "):
+            parts = content.split()
+            if len(parts) != 4:
+                await message.channel.send("Usage: `!hype set HYPE_THRESHOLD 45`")
+                return
+
+            key = parts[2].upper()
+            value = parts[3]
+
+            if key not in ["HYPE_WINDOW_SECONDS", "HYPE_THRESHOLD", "HYPE_COOLDOWN_SECONDS"]:
+                await message.channel.send(
+                    f"❌ Unknown key `{key}`\n"
+                    f"Valid keys: `HYPE_WINDOW_SECONDS`, `HYPE_THRESHOLD`, `HYPE_COOLDOWN_SECONDS`"
+                )
+                return
+
+            if not value.isdigit():
+                await message.channel.send(f"❌ Value must be a number")
+                return
+
+            # Update .env file
+            env_path = Path(".env")
+            lines = env_path.read_text().splitlines()
+            updated = False
+            new_lines = []
+            for line in lines:
+                if line.startswith(f"{key}="):
+                    new_lines.append(f"{key}={value}")
+                    updated = True
+                else:
+                    new_lines.append(line)
+            if not updated:
+                new_lines.append(f"{key}={value}")
+            env_path.write_text("\n".join(new_lines) + "\n")
+
+            await message.channel.send(
+                f"✅ Updated `{key}` = `{value}`\n"
+                f"⚠️ Restart the Scout task for changes to take effect."
+            )
+            return
+
+        # !hype help
+        if content == "!hype":
+            await message.channel.send(
+                "**Hype Commands:**\n"
+                "`!hype status` — show current settings\n"
+                "`!hype set HYPE_THRESHOLD 45` — change threshold\n"
+                "`!hype set HYPE_WINDOW_SECONDS 10` — change window\n"
+                "`!hype set HYPE_COOLDOWN_SECONDS 120` — change cooldown"
+            )
+        # !restart — restart the discord bot process
+        if content == "!restart":
+            await message.channel.send("🔄 Restarting bot...")
+            import os
+            os.execv(sys.executable, [sys.executable, "-m", "agents.discord_bot"])
+            return
+
+        # !restart scout — write flag file to restart scout
+        if content == "!restart scout":
+            Path("/tmp/restart_scout.flag").touch()
+            await message.channel.send(
+                "⚠️ Scout restart flag set — but you need to manually restart "
+                "the Scout always-on task on PythonAnywhere.\n"
+                "Go to **Tasks** and click **Restart**."
+            )
+            return
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         log.debug(f"Reaction: {payload.emoji} from {payload.user_id} on {payload.message_id}")

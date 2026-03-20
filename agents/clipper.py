@@ -20,6 +20,7 @@ import shutil
 import base64
 from datetime import datetime
 from pathlib import Path
+from config.settings import settings
 
 log = logging.getLogger("clipper")
 logging.basicConfig(
@@ -34,25 +35,7 @@ PROCESSED_FILE = Path("output/processed_moments.jsonl")
 DURATION = int(os.getenv("CLIP_PADDING_BEFORE", 50)) + int(os.getenv("CLIP_PADDING_AFTER", 10))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-# Per-channel webcam positions (proportional to source resolution)
-WEBCAM_DEFAULTS = {
-    "odablock": lambda w, h: {
-        "x": int(w * 0.7708),
-        "y": int(h * 0.0611),
-        "w": int(w * 0.2036),
-        "h": int(h * 0.2778),
-    },
-}
 
-# Per-channel content crop (game area, excludes black bars)
-CONTENT_CROP_DEFAULTS = {
-    "odablock": lambda w, h: {
-        "x": 0,
-        "y": 0,
-        "w": int(w * 0.673),
-        "h": int(h * 0.687),
-    },
-}
 
 
 # =============================================================================
@@ -144,17 +127,17 @@ def extract_frame(video_path: Path, frame_path: Path) -> bool:
     return result.returncode == 0 and frame_path.exists()
 
 
+# NEW
 def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
-    if channel in WEBCAM_DEFAULTS:
-        cam = WEBCAM_DEFAULTS[channel](video_w, video_h)
-        log.info(f"Using verified webcam for #{channel}: {cam}")
-        return cam
-    return None
+    cam = settings.get_webcam(channel, video_w, video_h)
+    if cam:
+        log.info(f"Using .env webcam for #{channel}: {cam}")
+    return cam
 
 
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
     # For known channels — use verified coordinates BUT also check for fullscreen
-    if channel in WEBCAM_DEFAULTS:
+    if settings.get_webcam(channel, video_w, video_h):
         # Send frame to Claude to check if fullscreen mode is active
         if ANTHROPIC_API_KEY:
             try:
@@ -313,11 +296,10 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
             log.info(f"Building 35/65 cam+content layout...")
             log.info(f"Webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
 
-            content_def = CONTENT_CROP_DEFAULTS.get(channel)
-            if content_def:
-                cc = content_def(w, h)
+            cc = settings.get_content_crop(channel, w, h)
+            if cc:
                 content_crop = f"crop={cc['w']}:{cc['h']}:{cc['x']}:{cc['y']}"
-                log.info(f"Using channel content crop: {cc}")
+                log.info(f"Using .env content crop for #{channel}: {cc}")
             else:
                 if cam["x"] > w * 0.5:
                     content_w = cam["x"]
@@ -499,7 +481,6 @@ def process_moment(moment: dict) -> Path | None:
     if not crop_to_vertical(clean, cropped, channel):
         return None
 
-    # Background music
     try:
         from agents.music import mix_music
         trigger_messages = moment.get("trigger_messages", [])
@@ -508,14 +489,8 @@ def process_moment(moment: dict) -> Path | None:
         log.warning(f"Music mix failed: {e} — skipping")
         shutil.copy(cropped, scored)
 
-    # Sound effects
-    try:
-        from agents.sfx import mix_sfx
-        trigger_messages = moment.get("trigger_messages", [])
-        mix_sfx(scored, sfx_out, trigger_messages)
-    except Exception as e:
-        log.warning(f"SFX mix failed: {e} — skipping")
-        shutil.copy(scored, sfx_out)
+    # NEW — SFX disabled
+    shutil.copy(scored, sfx_out)
 
     # Captions
     if not add_captions(sfx_out, final):
