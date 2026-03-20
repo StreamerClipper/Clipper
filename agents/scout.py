@@ -490,6 +490,8 @@ class KickChatScout:
         manual_triggered = any(kw in content_lower for kw in MANUAL_TRIGGERS)
 
         if manual_triggered or self.detector.should_trigger(rate, now):
+            # Lock cooldown IMMEDIATELY before any async sleep
+            self.detector._last_trigger = datetime.now(timezone.utc)
             offset = self._offset(now)
             moment = self.detector.trigger(
                 channel=self.channel_slug,
