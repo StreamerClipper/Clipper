@@ -138,50 +138,8 @@ def get_default_webcam(channel: str, video_w: int, video_h: int) -> dict | None:
 def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "") -> dict | None:
     # For known channels — use verified coordinates BUT also check for fullscreen
     if settings.get_webcam(channel, video_w, video_h):
-        # Send frame to Claude to check if fullscreen mode is active
-        if ANTHROPIC_API_KEY:
-            try:
-                import anthropic
-                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                with open(frame_path, "rb") as f:
-                    image_data = base64.b64encode(f.read()).decode("utf-8")
-
-                response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=100,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_data,
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": """Is the streamer's webcam/face taking up the FULL screen (or most of it),
-with no game visible? Or is the game visible with webcam in a corner?
-Reply with ONLY one word: FULLSCREEN or CORNER"""
-                            }
-                        ]
-                    }]
-                )
-
-                answer = response.content[0].text.strip().upper()
-                log.info(f"Claude layout detection: {answer}")
-
-                if "FULLSCREEN" in answer:
-                    log.info("Fullscreen webcam detected — will use full frame crop")
-                    return {"fullscreen": True, "x": 0, "y": 0, "w": video_w, "h": video_h}
-
-            except Exception as e:
-                log.warning(f"Fullscreen detection failed: {e}")
-
-        # Normal corner webcam — use verified coordinates
         return get_default_webcam(channel, video_w, video_h)
+
 
     # Unknown channel — try Claude vision
     if not ANTHROPIC_API_KEY:
@@ -277,60 +235,44 @@ def crop_to_vertical(input_path: Path, output_path: Path, channel: str = "") -> 
         frame_path.unlink(missing_ok=True)
 
     if cam:
-        # Check if fullscreen mode detected
-        if cam.get("fullscreen"):
-            log.info("Fullscreen mode — cropping webcam to 9:16 centre...")
-            # Centre crop the full frame to 9:16
-            target_w = int(h * 9 / 16)
-            crop_x = max(0, (w - target_w) // 2)
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", str(input_path),
-                "-vf", f"crop={target_w}:{h}:{crop_x}:0,scale={out_w}:{out_h}",
-                "-c:v", "libx264",
-                "-c:a", "aac",
-                "-preset", "fast",
-                str(output_path)
-            ]
+        log.info(f"Building 35/65 cam+content layout...")
+        log.info(f"Webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
+
+        cc = settings.get_content_crop(channel, w, h)
+        if cc:
+            content_crop = f"crop={cc['w']}:{cc['h']}:{cc['x']}:{cc['y']}"
+            log.info(f"Using .env content crop for #{channel}: {cc}")
         else:
-            log.info(f"Building 35/65 cam+content layout...")
-            log.info(f"Webcam: x={cam['x']} y={cam['y']} {cam['w']}x{cam['h']}")
-
-            cc = settings.get_content_crop(channel, w, h)
-            if cc:
-                content_crop = f"crop={cc['w']}:{cc['h']}:{cc['x']}:{cc['y']}"
-                log.info(f"Using .env content crop for #{channel}: {cc}")
+            if cam["x"] > w * 0.5:
+                content_w = cam["x"]
+                content_x = 0
             else:
-                if cam["x"] > w * 0.5:
-                    content_w = cam["x"]
-                    content_x = 0
-                else:
-                    content_w = w - (cam["x"] + cam["w"])
-                    content_x = cam["x"] + cam["w"]
-                content_crop = f"crop={content_w}:{h}:{content_x}:0"
-                log.info(f"Auto content crop: {content_crop}")
+                content_w = w - (cam["x"] + cam["w"])
+                content_x = cam["x"] + cam["w"]
+            content_crop = f"crop={content_w}:{h}:{content_x}:0"
+            log.info(f"Auto content crop: {content_crop}")
 
-            vf = (
-                f"[0:v]split=2[cam_src][content_src];"
-                f"[cam_src]crop={cam['w']}:{cam['h']}:{cam['x']}:{cam['y']},"
-                f"scale={out_w}:{cam_h}:force_original_aspect_ratio=increase,"
-                f"crop={out_w}:{cam_h}[cam_out];"
-                f"[content_src]{content_crop},"
-                f"scale={out_w}:{content_h}[content_out];"
-                f"[cam_out][content_out]vstack=inputs=2[out]"
-            )
+        vf = (
+            f"[0:v]split=2[cam_src][content_src];"
+            f"[cam_src]crop={cam['w']}:{cam['h']}:{cam['x']}:{cam['y']},"
+            f"scale={out_w}:{cam_h}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{cam_h}[cam_out];"
+            f"[content_src]{content_crop},"
+            f"scale={out_w}:{content_h}[content_out];"
+            f"[cam_out][content_out]vstack=inputs=2[out]"
+        )
 
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", str(input_path),
-                "-filter_complex", vf,
-                "-map", "[out]",
-                "-map", "0:a",
-                "-c:v", "libx264",
-                "-c:a", "aac",
-                "-preset", "fast",
-                str(output_path)
-            ]
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-filter_complex", vf,
+            "-map", "[out]",
+            "-map", "0:a",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-preset", "fast",
+            str(output_path)
+        ]
     else:
         log.info("No webcam — using fullscreen centre crop...")
         target_w = int(h * 9 / 16)
