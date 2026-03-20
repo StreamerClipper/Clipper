@@ -1,4 +1,4 @@
-"""
+    """
 config/settings.py — loads .env and exposes typed config values
 
 Per-streamer config supported via .env:
@@ -21,6 +21,7 @@ Per-streamer config supported via .env:
 """
 import os
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -74,13 +75,17 @@ class Settings:
         return int(os.getenv(f"COOLDOWN_{channel.upper()}", self.HYPE_COOLDOWN_SECONDS))
 
     def get_webcam(self, channel: str, video_w: int, video_h: int) -> dict | None:
-        """
-        Get webcam coordinates for a channel from .env.
-        Format: WEBCAM_{CHANNEL}=x_pct,y_pct,w_pct,h_pct
-        Example: WEBCAM_odablock=0.7708,0.0611,0.2036,0.2778
-        Returns pixel coordinates or None if not configured.
-        """
-        val = os.getenv(f"WEBCAM_{channel.upper()}")
+        # Try STREAMER_CONFIG first (GitHub Actions)
+        config_raw = os.getenv("STREAMER_CONFIG")
+        if config_raw:
+            try:
+                val = json.loads(config_raw).get(channel, {}).get("webcam")
+            except Exception:
+                val = None
+        else:
+            # Fall back to individual .env vars (PythonAnywhere)
+            val = os.getenv(f"WEBCAM_{channel.upper()}")
+
         if not val:
             return None
         try:
@@ -95,12 +100,17 @@ class Settings:
             return None
 
     def get_content_crop(self, channel: str, video_w: int, video_h: int) -> dict | None:
-        """
-        Get content crop for a channel from .env.
-        Format: CONTENT_{CHANNEL}=x_pct,y_pct,w_pct,h_pct
-        Example: CONTENT_odablock=0.0,0.0,0.673,0.687
-        """
-        val = os.getenv(f"CONTENT_{channel.upper()}")
+        # Try STREAMER_CONFIG first (GitHub Actions)
+        config_raw = os.getenv("STREAMER_CONFIG")
+        if config_raw:
+            try:
+                val = json.loads(config_raw).get(channel, {}).get("content")
+            except Exception:
+                val = None
+        else:
+            # Fall back to individual .env vars (PythonAnywhere)
+            val = os.getenv(f"CONTENT_{channel.upper()}")
+
         if not val:
             return None
         try:
@@ -113,6 +123,5 @@ class Settings:
             }
         except Exception:
             return None
-
 
 settings = Settings()
