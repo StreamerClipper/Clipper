@@ -25,6 +25,7 @@ Run:
 import asyncio
 import json
 import logging
+import time
 import argparse
 import base64
 import signal
@@ -33,7 +34,6 @@ import shutil
 from collections import deque, Counter
 from datetime import datetime, timezone
 from pathlib import Path
-
 import websockets
 import aiohttp
 import cloudscraper
@@ -228,7 +228,6 @@ class RollingBuffer:
                 seg.unlink(missing_ok=True)
 
     def get_buffered_segments(self) -> list[Path]:
-        import time
         now = time.time()
         segments = sorted(self.buffer_dir.glob("seg_*.ts"))
         # Keep only segments written in the last 60 seconds and over 1MB
@@ -273,8 +272,10 @@ class RollingBuffer:
         log.info(f"[{self.channel}] Buffer stitched: {output_path.name} ({size/1024/1024:.1f}MB)")
         # Detailed clip info for scout-log
         total_duration = len(segments) * SEGMENT_DURATION
+        now = time.time()
         seg_details = "\n".join(
-            f"  • {s.name} | {s.stat().st_size/1024/1024:.1f}MB | {SEGMENT_DURATION}s"
+            f"  • {s.name} | {s.stat().st_size/1024/1024:.1f}MB | "
+            f"recorded ~{datetime.fromtimestamp(s.stat().st_mtime).strftime('%H:%M:%S')} UTC"
             for s in segments
         )
         scout_log(
@@ -540,10 +541,10 @@ class KickChatScout:
             )
             self._moments.append(moment)
             self._building_alerted = False
-
             trigger_time = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
             top_msgs = moment.trigger_messages[-3:]
             top_msgs_str = "\n".join(f"    → {m}" for m in top_msgs)
+            discord_msgs = "\n".join(f"> `{trigger_time}` {m}" for m in top_msgs)
             log.info(
                 f"\n{'='*50}\n"
                 f"  [{self.channel_slug}] HYPE TRIGGERED\n"
@@ -553,8 +554,6 @@ class KickChatScout:
                 f"  Msgs  :\n{top_msgs_str}\n"
                 f"{'='*50}"
             )
-
-            discord_msgs = "\n".join(f"> {m}" for m in top_msgs)
             buf_segments = len(self.buffer.get_buffered_segments())
             discord_log(
                 f"🔥 **HYPE TRIGGERED** on #{self.channel_slug}\n"
@@ -574,7 +573,7 @@ class KickChatScout:
                 discord_log(f"✅ Clip ready from buffer — processing started!")
             else:
                 discord_log(f"⚠️ Buffer empty — falling back to live recording")
-                scout_log(f"⚠️ **#{self.channel}** buffer empty on trigger — live recording fallback")
+                scout_log(f"⚠️ **#{self.channel_slug}** buffer empty on trigger — live recording fallback)
 
             with open(self._local_log, "a") as f:
                 f.write(json.dumps(moment_dict) + "\n")
@@ -602,7 +601,6 @@ async def run_channel(channel: str):
             log.warning(f"[{channel}] Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **#{channel} scout crashed** — reconnecting in 30s...\n`{e}`")
             scout_log(f"🟢 **#{self.channel}** connected — buffer active")
-
             scout.cleanup()
 
         await asyncio.sleep(30)
