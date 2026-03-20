@@ -573,8 +573,7 @@ class KickChatScout:
                 discord_log(f"✅ Clip ready from buffer — processing started!")
             else:
                 discord_log(f"⚠️ Buffer empty — falling back to live recording")
-                scout_log(f"⚠️ **#{self.channel_slug}** buffer empty on trigger — live recording fallback)
-
+                scout_log(f"⚠️ **#{self.channel_slug}** buffer empty on trigger — live recording fallback")
             with open(self._local_log, "a") as f:
                 f.write(json.dumps(moment_dict) + "\n")
 
