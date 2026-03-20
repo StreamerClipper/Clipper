@@ -179,7 +179,7 @@ def detect_webcam(frame_path: Path, video_w: int, video_h: int, channel: str = "
                             },
                             {
                                 "type": "text",
-                                "text": """Is the streamer's webcam/face taking up the FULL screen (or most of it), 
+                                "text": """Is the streamer's webcam/face taking up the FULL screen (or most of it),
 with no game visible? Or is the game visible with webcam in a corner?
 Reply with ONLY one word: FULLSCREEN or CORNER"""
                             }
@@ -432,7 +432,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         "-i", str(input_path),
         "-vf", (
             f"subtitles={srt_path}:force_style='"
-            "FontName=Arial,"
+            "FontName=LuckiestGuy-Regular,"
             "FontSize=20,"
             "Bold=1,"
             "PrimaryColour=&H00FFFFFF,"
@@ -508,8 +508,14 @@ def process_moment(moment: dict) -> Path | None:
         log.warning(f"Music mix failed: {e} — skipping")
         shutil.copy(cropped, scored)
 
-    # SFX disabled — timings off
-    shutil.copy(scored, sfx_out)
+    # Sound effects
+    try:
+        from agents.sfx import mix_sfx
+        trigger_messages = moment.get("trigger_messages", [])
+        mix_sfx(scored, sfx_out, trigger_messages)
+    except Exception as e:
+        log.warning(f"SFX mix failed: {e} — skipping")
+        shutil.copy(scored, sfx_out)
 
     # Captions
     if not add_captions(sfx_out, final):
