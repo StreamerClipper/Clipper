@@ -210,7 +210,8 @@ class RollingBuffer:
                 seg.unlink(missing_ok=True)
 
     def get_buffered_segments(self) -> list[Path]:
-        return sorted(self.buffer_dir.glob("seg_*.ts"))
+        segments = sorted(self.buffer_dir.glob("seg_*.ts"))
+        return [s for s in segments if s.stat().st_size > 1_000_000]
 
     def extract_clip(self, timestamp: str) -> Path | None:
         segments = self.get_buffered_segments()
@@ -295,6 +296,7 @@ class RollingBuffer:
                         *["ffmpeg", "-y", "-live_start_index", "-1",
                           "-i", new_url, "-c", "copy",
                           "-f", "segment", "-segment_time", str(SEGMENT_DURATION),
+                          segment_pattern],
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
