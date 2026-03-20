@@ -210,8 +210,13 @@ class RollingBuffer:
                 seg.unlink(missing_ok=True)
 
     def get_buffered_segments(self) -> list[Path]:
+        import time
+        now = time.time()
         segments = sorted(self.buffer_dir.glob("seg_*.ts"))
-        return [s for s in segments if s.stat().st_size > 1_000_000]
+        # Keep only segments written in the last 60 seconds and over 1MB
+        return [s for s in segments
+                if s.stat().st_size > 1_000_000
+                and (now - s.stat().st_mtime) < 60]
 
     def extract_clip(self, timestamp: str) -> Path | None:
         segments = self.get_buffered_segments()
