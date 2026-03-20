@@ -52,13 +52,13 @@ def load_next_moment():
         log.info("pending_moments.jsonl is empty — nothing to process")
         return None, None
 
-    moment = json.loads(lines[0])
+    moment = json.loads(lines[-1])
     log.info(f"Processing: #{moment['channel']} @ {moment['peak_offset']:.0f}s into stream")
     return moment, lines
 
 
 def mark_processed(moment: dict, lines: list[str]):
-    remaining = lines[1:]
+    remaining = lines[:-1]
     MOMENTS_FILE.write_text("\n".join(remaining) + ("\n" if remaining else ""))
     moment["processed_at"] = datetime.utcnow().isoformat()
     with open(PROCESSED_FILE, "a") as f:
@@ -413,7 +413,7 @@ def add_captions(input_path: Path, output_path: Path) -> bool:
         "ffmpeg", "-y",
         "-i", str(input_path),
         "-vf", (
-            f"subtitles={srt_path}:force_style='"
+            f"subtitles={srt_path}:fontsdir=/home/runner/work/Clipper/Clipper/fonts:force_style='"
             "FontName=LuckiestGuy-Regular,"
             "FontSize=20,"
             "Bold=1,"
