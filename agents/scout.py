@@ -263,7 +263,6 @@ class RollingBuffer:
             "-c", "copy",
             "-f", "segment",
             "-segment_time", str(SEGMENT_DURATION),
-            "-reset_timestamps", "1",
             segment_pattern
         ]
 
@@ -296,7 +295,6 @@ class RollingBuffer:
                         *["ffmpeg", "-y", "-live_start_index", "-1",
                           "-i", new_url, "-c", "copy",
                           "-f", "segment", "-segment_time", str(SEGMENT_DURATION),
-                          "-reset_timestamps", "1", segment_pattern],
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
