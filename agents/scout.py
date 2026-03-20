@@ -53,6 +53,7 @@ KICK_WS_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&clien
 KICK_API_BASE = "https://kick.com/api/v2"
 GITHUB_API = "https://api.github.com"
 DISCORD_LOG_CHANNEL = "1482831221347057826"
+DISCORD_SCOUT_LOG_CHANNEL = "1484635471891140618"
 
 # Buffer settings
 SEGMENT_DURATION = 10
@@ -80,6 +81,19 @@ def discord_log(message: str):
     except Exception:
         pass
 
+def scout_log(message: str):
+    token = settings.DISCORD_BOT_TOKEN
+    if not token:
+        return
+    try:
+        requests.post(
+            f"https://discord.com/api/v10/channels/{DISCORD_SCOUT_LOG_CHANNEL}/messages",
+            headers={"Authorization": f"Bot {token}"},
+            json={"content": message},
+            timeout=5
+        )
+    except Exception:
+        pass
 
 # =============================================================================
 # Kick API
@@ -257,6 +271,19 @@ class RollingBuffer:
             return None
 
         log.info(f"[{self.channel}] Buffer stitched: {output_path.name} ({size/1024/1024:.1f}MB)")
+        # Detailed clip info for scout-log
+        total_duration = len(segments) * SEGMENT_DURATION
+        seg_details = "\n".join(
+            f"  • {s.name} | {s.stat().st_size/1024/1024:.1f}MB | {SEGMENT_DURATION}s"
+            for s in segments
+        )
+        scout_log(
+            f"🎬 **#{self.channel}** clip stitched\n"
+            f"📁 File: `{output_path.name}`\n"
+            f"📏 Total length: `{total_duration}s`\n"
+            f"💾 Total size: `{size/1024/1024:.1f}MB`\n"
+            f"📦 Segments:\n{seg_details}"
+        )
         return output_path
 
     async def start(self, hls_url: str):
@@ -283,6 +310,8 @@ class RollingBuffer:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             log.info(f"[{self.channel}] Buffer started (PID {self._process.pid})")
+            scout_log(f"✅ **#{self.channel}** buffer started")
+
         except Exception as e:
             log.error(f"[{self.channel}] Failed to start buffer: {e}")
             return
@@ -296,6 +325,7 @@ class RollingBuffer:
 
             if self._process and self._process.returncode is not None:
                 log.warning(f"[{self.channel}] Buffer process died — refreshing HLS URL")
+                scout_log(f"⚠️ **#{self.channel}** buffer died — refreshing HLS URL...")
                 new_url = await asyncio.get_running_loop().run_in_executor(
                     None, get_hls_url, self.channel
                 )
@@ -494,7 +524,7 @@ class KickChatScout:
             self._building_alerted = False
 
         # Manual trigger keywords
-        MANUAL_TRIGGERS = ["go for it mr streamer", "!clip", "clipbot"]
+        MANUAL_TRIGGERS = ["go for it mr streamer", "!clip", "clipbot", "lock in mr streamer"]
         content_lower = msg.content.lower()
         manual_triggered = any(kw in content_lower for kw in MANUAL_TRIGGERS)
 
@@ -544,6 +574,7 @@ class KickChatScout:
                 discord_log(f"✅ Clip ready from buffer — processing started!")
             else:
                 discord_log(f"⚠️ Buffer empty — falling back to live recording")
+                scout_log(f"⚠️ **#{self.channel}** buffer empty on trigger — live recording fallback")
 
             with open(self._local_log, "a") as f:
                 f.write(json.dumps(moment_dict) + "\n")
@@ -570,6 +601,8 @@ async def run_channel(channel: str):
         except Exception as e:
             log.warning(f"[{channel}] Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **#{channel} scout crashed** — reconnecting in 30s...\n`{e}`")
+            scout_log(f"🟢 **#{self.channel}** connected — buffer active")
+
             scout.cleanup()
 
         await asyncio.sleep(30)
