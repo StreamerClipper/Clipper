@@ -202,6 +202,10 @@ class RollingBuffer:
         self._process = None
         self._running = False
         self._hls_url: str | None = None
+        # Clear any stale segments from previous session
+        for seg in self.buffer_dir.glob("seg_*.ts"):
+            seg.unlink(missing_ok=True)
+        log.debug(f"[{channel}] Buffer directory cleared on init")
 
     def _clean_old_segments(self):
         segments = sorted(self.buffer_dir.glob("seg_*.ts"))
