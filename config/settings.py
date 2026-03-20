@@ -1,5 +1,23 @@
 """
 config/settings.py — loads .env and exposes typed config values
+
+Per-streamer config supported via .env:
+    KICK_CHANNELS=odablock,greg,xqc
+
+    # Per-streamer webcam (x%,y%,w%,h% as decimals from calibrator tool)
+    WEBCAM_odablock=0.7708,0.0611,0.2036,0.2778
+    WEBCAM_greg=0.0,0.0,0.25,0.30
+
+    # Per-streamer content crop
+    CONTENT_odablock=0.0,0.0,0.673,0.687
+
+    # Per-streamer hype thresholds
+    THRESHOLD_odablock=60
+    THRESHOLD_greg=10
+
+    # Per-streamer cooldown
+    COOLDOWN_odablock=120
+    COOLDOWN_greg=60
 """
 import os
 from dotenv import load_dotenv
@@ -8,20 +26,22 @@ load_dotenv()
 
 
 class Settings:
-    # Anthropic (Publisher agent)
+    # Anthropic
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
-    # GitHub (Scout pushes moments here to trigger Clipper)
+    # GitHub
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
-    GITHUB_REPO: str = os.getenv("GITHUB_REPO", "")  # e.g. "username/clipbot"
+    GITHUB_REPO: str = os.getenv("GITHUB_REPO", "")
 
-    # Scout
-    KICK_CHANNELS: list[str] = os.getenv("KICK_CHANNELS", "").split(",")
+    # Scout — global defaults (per-streamer overrides via helper functions)
+    KICK_CHANNELS: list[str] = [
+        c.strip() for c in os.getenv("KICK_CHANNELS", "").split(",") if c.strip()
+    ]
     HYPE_WINDOW_SECONDS: int = int(os.getenv("HYPE_WINDOW_SECONDS", 10))
-    HYPE_THRESHOLD: int = int(os.getenv("HYPE_THRESHOLD", 15))
-    HYPE_COOLDOWN_SECONDS: int = int(os.getenv("HYPE_COOLDOWN_SECONDS", 60))
+    HYPE_THRESHOLD: int = int(os.getenv("HYPE_THRESHOLD", 30))
+    HYPE_COOLDOWN_SECONDS: int = int(os.getenv("HYPE_COOLDOWN_SECONDS", 120))
 
-    # Clipper (used inside GitHub Actions)
+    # Clipper
     CLIP_PADDING_BEFORE: int = int(os.getenv("CLIP_PADDING_BEFORE", 20))
     CLIP_PADDING_AFTER: int = int(os.getenv("CLIP_PADDING_AFTER", 10))
 
@@ -32,7 +52,7 @@ class Settings:
 
     # Discord
     DISCORD_BOT_TOKEN: str = os.getenv("DISCORD_BOT_TOKEN", "")
-    DISCORD_CHANNEL_ID: str = os.getenv("DISCORD_CHANNEL_ID", "1482642033481875536")
+    DISCORD_CHANNEL_ID: str = os.getenv("DISCORD_CHANNEL_ID", "1482642034203426848")
 
     # Output paths
     CLIPS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "output", "clips")
@@ -40,6 +60,59 @@ class Settings:
     MOMENTS_FILE: str = os.path.join(
         os.path.dirname(__file__), "..", "output", "pending_moments.jsonl"
     )
+
+    # =========================================================================
+    # Per-streamer helpers
+    # =========================================================================
+
+    def get_threshold(self, channel: str) -> int:
+        """Get hype threshold for a specific channel."""
+        return int(os.getenv(f"THRESHOLD_{channel.upper()}", self.HYPE_THRESHOLD))
+
+    def get_cooldown(self, channel: str) -> int:
+        """Get cooldown for a specific channel."""
+        return int(os.getenv(f"COOLDOWN_{channel.upper()}", self.HYPE_COOLDOWN_SECONDS))
+
+    def get_webcam(self, channel: str, video_w: int, video_h: int) -> dict | None:
+        """
+        Get webcam coordinates for a channel from .env.
+        Format: WEBCAM_{CHANNEL}=x_pct,y_pct,w_pct,h_pct
+        Example: WEBCAM_odablock=0.7708,0.0611,0.2036,0.2778
+        Returns pixel coordinates or None if not configured.
+        """
+        val = os.getenv(f"WEBCAM_{channel.upper()}")
+        if not val:
+            return None
+        try:
+            x_pct, y_pct, w_pct, h_pct = map(float, val.split(","))
+            return {
+                "x": int(video_w * x_pct),
+                "y": int(video_h * y_pct),
+                "w": int(video_w * w_pct),
+                "h": int(video_h * h_pct),
+            }
+        except Exception:
+            return None
+
+    def get_content_crop(self, channel: str, video_w: int, video_h: int) -> dict | None:
+        """
+        Get content crop for a channel from .env.
+        Format: CONTENT_{CHANNEL}=x_pct,y_pct,w_pct,h_pct
+        Example: CONTENT_odablock=0.0,0.0,0.673,0.687
+        """
+        val = os.getenv(f"CONTENT_{channel.upper()}")
+        if not val:
+            return None
+        try:
+            x_pct, y_pct, w_pct, h_pct = map(float, val.split(","))
+            return {
+                "x": int(video_w * x_pct),
+                "y": int(video_h * y_pct),
+                "w": int(video_w * w_pct),
+                "h": int(video_h * h_pct),
+            }
+        except Exception:
+            return None
 
 
 settings = Settings()
