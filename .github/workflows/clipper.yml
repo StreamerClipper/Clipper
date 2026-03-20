@@ -53,14 +53,7 @@ jobs:
           CLIP_PADDING_BEFORE: "50"
           CLIP_PADDING_AFTER: "10"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          WEBCAM_ODABLOCK: ${{ secrets.WEBCAM_ODABLOCK }}
-          CONTENT_ODABLOCK: ${{ secrets.CONTENT_ODABLOCK }}
-          WEBCAM_GREG: ${{ secrets.WEBCAM_GREG }}
-          CONTENT_GREG: ${{ secrets.CONTENT_GREG }}
-          WEBCAM_RHYS: ${{ secrets.WEBCAM_RHYS }}
-          CONTENT_RHYS: ${{ secrets.CONTENT_RHYS }}
-          WEBCAM_EVSCAPE: ${{ secrets.WEBCAM_EVSCAPE }}
-          CONTENT_EVSCAPE: ${{ secrets.CONTENT_EVSCAPE }}
+          STREAMER_CONFIG: ${{ secrets.STREAMER_CONFIG }}
         run: python -m agents.clipper
 
       - name: Run Publisher
