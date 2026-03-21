@@ -1,20 +1,17 @@
 """
 agents/soap_scout.py — Soap Opera Shorts: Scout
 
-Polls a YouTube playlist (or channel uploads) for new episodes.
-When a new episode is found, writes it to output/soap_pending.jsonl
-so soap_clipper.py can process it.
+Queues YouTube episode URLs for processing.
+All yt-dlp work (metadata, hotspot detection, downloading) happens in
+GitHub Actions via soap_clipper.py where Node.js is available.
 
-Also handles the Discord !soap commands (mirrors !hype commands in discord_bot.py).
-
-Run on PythonAnywhere always-on task:
+Run on PythonAnywhere always-on task (for playlist polling):
     cd /home/StreamerClipper/clipbot && python -m agents.soap_scout
 
-Or trigger manually with a URL:
+Or triggered as subprocess by discord_bot.py on !soap clip <url>:
     python -m agents.soap_scout --url https://www.youtube.com/watch?v=XXXXX
 """
 import argparse
-import asyncio
 import json
 import logging
 import os
@@ -35,9 +32,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-POLL_INTERVAL = int(os.getenv("SOAP_POLL_INTERVAL", 3600))   # 1 hour default
+POLL_INTERVAL     = int(os.getenv("SOAP_POLL_INTERVAL", 3600))
 SOAP_PENDING_FILE = Path("output/soap_pending.jsonl")
-SOAP_SEEN_FILE    = Path("output/soap_seen.json")            # tracks already-processed video IDs
+SOAP_SEEN_FILE    = Path("output/soap_seen.json")
 
 # Soap-specific Discord channels
 SOAP_CLIPS_CHANNEL_ID = "1484834736257106020"
@@ -46,7 +43,7 @@ SOAP_INPUT_CHANNEL_ID = "1484842601617293394"
 
 
 # =============================================================================
-# Discord logging (mirrors discord_log() in scout.py)
+# Discord logging
 # =============================================================================
 
 def discord_log(message: str, channel_id: str = None):
@@ -66,7 +63,7 @@ def discord_log(message: str, channel_id: str = None):
 
 
 # =============================================================================
-# Seen-video tracking
+# Seen-video tracking (for playlist polling)
 # =============================================================================
 
 def load_seen() -> set[str]:
@@ -82,14 +79,49 @@ def mark_seen(video_id: str):
 
 
 # =============================================================================
-# yt-dlp helpers
+# Queue + git push (triggers GitHub Actions)
+# =============================================================================
+
+def process_url(url: str) -> bool:
+    """
+    Write URL to soap_pending.jsonl and push to GitHub.
+    GitHub Actions picks it up and runs soap_clipper.py.
+    No yt-dlp here — that runs in Actions where Node.js is available.
+    """
+    log.info(f"Queuing: {url}")
+
+    SOAP_PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    job = {
+        "url":       url,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(SOAP_PENDING_FILE, "a") as f:
+        f.write(json.dumps(job) + "\n")
+
+    # Commit and push to trigger GitHub Actions
+    cwd = Path("/home/StreamerClipper/clipbot")
+    try:
+        subprocess.run(["git", "add", "output/soap_pending.jsonl"], cwd=cwd, check=True)
+        subprocess.run(["git", "commit", "-m", f"[soap] queue: {url}"], cwd=cwd, check=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=cwd, check=True)
+        log.info("Pushed to GitHub — Actions triggered")
+        discord_log(
+            f"📋 **[Soap]** Episode queued — fetching hotspots and generating clips in GitHub Actions...\n`{url}`",
+            channel_id=SOAP_LOG_CHANNEL_ID,
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        log.error(f"Git push failed: {e}")
+        discord_log(f"❌ **[Soap]** Git push failed: `{e}`", channel_id=SOAP_LOG_CHANNEL_ID)
+        return False
+
+
+# =============================================================================
+# Playlist polling (optional — for auto-monitoring)
+# Uses yt-dlp only for flat playlist fetch (no n-challenge needed)
 # =============================================================================
 
 def fetch_playlist_entries(playlist_url: str, max_entries: int = 5) -> list[dict]:
-    """
-    Return the most recent N entries from a YouTube playlist/channel.
-    Each entry: {id, title, url, upload_date, duration}
-    """
     cmd = [
         "yt-dlp",
         "--dump-json",
@@ -109,170 +141,20 @@ def fetch_playlist_entries(playlist_url: str, max_entries: int = 5) -> list[dict
         try:
             entry = json.loads(line)
             entries.append({
-                "id":          entry.get("id", ""),
-                "title":       entry.get("title", ""),
-                "url":         entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}",
-                "upload_date": entry.get("upload_date", ""),
-                "duration":    entry.get("duration", 0),
+                "id":  entry.get("id", ""),
+                "url": entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}",
             })
         except Exception:
             continue
     return entries
 
 
-def fetch_video_metadata(url: str) -> dict | None:
-    """
-    Fetch full metadata + heatmap for a single video URL.
-    Returns dict with id, title, duration, heatmap list.
-    """
-    cmd = [
-        "yt-dlp",
-        "--dump-json",
-        "--no-playlist",
-        "--no-warnings",
-        "--cookies", "/home/StreamerClipper/clipbot/cookies.txt",
-        url,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        log.error(f"yt-dlp metadata fetch failed: {result.stderr[:300]}")
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        log.error("yt-dlp returned invalid JSON")
-        return None
-
-    raw_heatmap = data.get("heatmap") or []
-    heatmap = [
-        {
-            "start":     p.get("start_time", 0),
-            "end":       p.get("end_time", 0),
-            "intensity": p.get("value", 0.0),
-        }
-        for p in raw_heatmap
-    ]
-
-    return {
-        "video_id":    data["id"],
-        "title":       data.get("title", ""),
-        "url":         f"https://www.youtube.com/watch?v={data['id']}",
-        "duration":    data.get("duration", 0),
-        "heatmap":     heatmap,
-        "upload_date": data.get("upload_date", ""),
-    }
-
-
-# =============================================================================
-# Hotspot detection  (top 3 non-overlapping 30s windows)
-# =============================================================================
-
-CLIP_DURATION = 30
-TOP_N = 3
-
-
-def find_hotspots(heatmap: list[dict]) -> list[dict]:
-    """
-    Find top N non-overlapping peaks in the Most Replayed heatmap.
-    Returns list of {start_sec, peak_sec, end_sec, intensity} dicts,
-    in chronological order.
-    """
-    if not heatmap:
-        return []
-
-    half = CLIP_DURATION / 2
-    ranked = sorted(heatmap, key=lambda p: p["intensity"], reverse=True)
-    chosen = []
-    windows = []   # list of (win_start, win_end) already claimed
-
-    for point in ranked:
-        if len(chosen) >= TOP_N:
-            break
-
-        peak_sec  = (point["start"] + point["end"]) / 2
-        win_start = max(0.0, peak_sec - half)
-        win_end   = win_start + CLIP_DURATION
-
-        # Skip if overlaps with any already-chosen window
-        if any(not (win_end <= ws or win_start >= we) for ws, we in windows):
-            continue
-
-        chosen.append({
-            "start_sec": win_start,
-            "peak_sec":  peak_sec,
-            "end_sec":   win_end,
-            "intensity": point["intensity"],
-        })
-        windows.append((win_start, win_end))
-
-    # Return in chronological order — easier for the editor to review
-    return sorted(chosen, key=lambda h: h["start_sec"])
-
-
-# =============================================================================
-# Queue a job for soap_clipper.py
-# =============================================================================
-
-def enqueue_job(video_meta: dict, hotspots: list[dict]):
-    SOAP_PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    job = {
-        "video_id":    video_meta["video_id"],
-        "title":       video_meta["title"],
-        "url":         video_meta["url"],
-        "duration":    video_meta["duration"],
-        "hotspots":    hotspots,
-        "queued_at":   datetime.now(timezone.utc).isoformat(),
-    }
-    with open(SOAP_PENDING_FILE, "a") as f:
-        f.write(json.dumps(job) + "\n")
-    log.info(f"Queued job: {video_meta['title']} ({len(hotspots)} hotspots)")
-
-
-# =============================================================================
-# Process a single URL (used both by manual --url and playlist polling)
-# =============================================================================
-
-def process_url(url: str) -> bool:
-    log.info(f"Fetching metadata for: {url}")
-    meta = fetch_video_metadata(url)
-    if not meta:
-        discord_log(f"❌ **[Soap]** Could not fetch metadata for `{url}`", channel_id=SOAP_LOG_CHANNEL_ID)
-        return False
-
-    if not meta["heatmap"]:
-        discord_log(
-            f"⚠️ **[Soap]** No Most Replayed data for *{meta['title']}*\n"
-            f"The video may be too new or have too few views. Try again later."
-        )
-        return False
-
-    hotspots = find_hotspots(meta["heatmap"])
-    if not hotspots:
-        discord_log(f"⚠️ **[Soap]** No usable hotspots found in *{meta['title']}*", channel_id=SOAP_LOG_CHANNEL_ID)
-        return False
-
-    enqueue_job(meta, hotspots)
-
-    hs_summary = "\n".join(
-        f"  • Clip {i+1}: `{int(h['start_sec']//60):02d}:{int(h['start_sec']%60):02d}` — `{h['intensity']:.0%}` intensity"
-        for i, h in enumerate(hotspots)
-    )
-    discord_log(
-        f"📺 **[Soap]** New episode queued for clipping!\n"
-        f"**{meta['title']}**\n"
-        f"Hotspots found:\n{hs_summary}\n"
-        f"⏳ Clips will appear for approval shortly..."
-    )
-    return True
-
-
-# =============================================================================
-# Playlist polling loop
-# =============================================================================
-
 def poll_playlist(playlist_url: str):
     log.info(f"Polling playlist: {playlist_url} every {POLL_INTERVAL}s")
-    discord_log(f"📡 **[Soap Scout]** Started — polling playlist every {POLL_INTERVAL//3600}h", channel_id=SOAP_LOG_CHANNEL_ID)
+    discord_log(
+        f"📡 **[Soap Scout]** Started — polling playlist every {POLL_INTERVAL//3600}h",
+        channel_id=SOAP_LOG_CHANNEL_ID,
+    )
     while True:
         seen = load_seen()
         entries = fetch_playlist_entries(playlist_url, max_entries=5)
@@ -281,7 +163,7 @@ def poll_playlist(playlist_url: str):
             vid = entry["id"]
             if vid in seen:
                 continue
-            log.info(f"New episode: {entry['title']}")
+            log.info(f"New episode found: {vid}")
             ok = process_url(entry["url"])
             if ok:
                 mark_seen(vid)
@@ -295,8 +177,8 @@ def poll_playlist(playlist_url: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Soap Opera Shorts — Scout")
-    parser.add_argument("--url",      help="Process a single YouTube URL immediately")
-    parser.add_argument("--playlist", help="Poll a playlist URL (overrides SOAP_PLAYLIST_URL in .env)")
+    parser.add_argument("--url",      help="Queue a single YouTube URL immediately")
+    parser.add_argument("--playlist", help="Poll a playlist URL")
     parser.add_argument("--debug",    action="store_true")
     args = parser.parse_args()
 
@@ -304,7 +186,6 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
 
     if args.url:
-        # Manual single-video trigger (used by the Discord !soap clip command)
         ok = process_url(args.url)
         sys.exit(0 if ok else 1)
 

@@ -1,16 +1,14 @@
 """
 agents/soap_clipper.py — Soap Opera Shorts: Clipper
 
-Reads from output/soap_pending.jsonl (written by soap_scout.py).
-For each job:
-  1. Downloads each hotspot segment with yt-dlp --download-sections
-  2. Crops to 9:16 (centre crop — soap operas are full-frame, no webcam)
-  3. Burns auto-generated Turkish/English subtitles with ffmpeg
-  4. Sends each clip to Discord for approval (same ✅/❌ pattern as clipper.py)
-
-Designed to run inside GitHub Actions (triggered by soap_pending.jsonl commit),
-or locally:
-    python -m agents.soap_clipper
+Runs inside GitHub Actions (triggered by soap_pending.jsonl commit).
+For each queued URL:
+  1. Fetches metadata + Most Replayed heatmap via yt-dlp
+  2. Detects top 3 non-overlapping 30s hotspots
+  3. Downloads each segment with yt-dlp --download-sections
+  4. Crops to 9:16 with ffmpeg
+  5. Burns Turkish/English subtitles
+  6. Posts each clip to Discord for approval
 """
 import json
 import logging
@@ -18,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,23 +37,29 @@ SOAP_DISCORD_FILE   = Path("output/soap_discord_pending.jsonl")
 CLIPS_DIR           = Path("output/clips")
 TMP_DIR             = Path("/tmp/soap_clipper")
 
-CLIP_DURATION       = 30     # seconds per Short
-OUT_W, OUT_H        = 608, 1080
+CLIP_DURATION = 30
+TOP_N         = 3
+OUT_W, OUT_H  = 608, 1080
 
-DISCORD_BOT_TOKEN   = settings.DISCORD_BOT_TOKEN
-DISCORD_CHANNEL_ID  = settings.DISCORD_CHANNEL_ID
+DISCORD_BOT_TOKEN = settings.DISCORD_BOT_TOKEN
+
+# Soap-specific Discord channels
+SOAP_CLIPS_CHANNEL_ID = "1484834736257106020"
+SOAP_LOG_CHANNEL_ID   = "1484834748181385256"
+SOAP_INPUT_CHANNEL_ID = "1484842601617293394"
 
 
 # =============================================================================
-# Helpers
+# Discord logging
 # =============================================================================
 
-def discord_log(message: str):
+def discord_log(message: str, channel_id: str = None):
     if not DISCORD_BOT_TOKEN:
         return
+    cid = channel_id or SOAP_LOG_CHANNEL_ID
     try:
         requests.post(
-            f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages",
+            f"https://discord.com/api/v10/channels/{cid}/messages",
             headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
             json={"content": message},
             timeout=5,
@@ -63,8 +68,11 @@ def discord_log(message: str):
         pass
 
 
+# =============================================================================
+# Helpers
+# =============================================================================
+
 def ts(seconds: float) -> str:
-    """Seconds → HH:MM:SS.mmm for yt-dlp / ffmpeg."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
@@ -72,13 +80,12 @@ def ts(seconds: float) -> str:
 
 
 def ts_label(seconds: float) -> str:
-    """Seconds → MM:SS for display."""
     m, s = divmod(int(seconds), 60)
     return f"{m:02d}:{s:02d}"
 
 
 # =============================================================================
-# Queue management (mirrors clipper.py's load_next_moment / mark_processed)
+# Queue management
 # =============================================================================
 
 def load_next_job():
@@ -99,27 +106,99 @@ def mark_processed(job: dict, lines: list[str]):
 
 
 # =============================================================================
-# Step 1 — Download hotspot segment
+# Step 1 — Fetch metadata + heatmap (runs in Actions where Node.js exists)
+# =============================================================================
+
+def fetch_video_metadata(url: str) -> dict | None:
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--no-playlist",
+        "--no-warnings",
+        url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        log.error(f"yt-dlp metadata fetch failed: {result.stderr[:400]}")
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log.error("yt-dlp returned invalid JSON")
+        return None
+
+    raw_heatmap = data.get("heatmap") or []
+    heatmap = [
+        {
+            "start":     p.get("start_time", 0),
+            "end":       p.get("end_time", 0),
+            "intensity": p.get("value", 0.0),
+        }
+        for p in raw_heatmap
+    ]
+
+    return {
+        "video_id":    data["id"],
+        "title":       data.get("title", ""),
+        "url":         f"https://www.youtube.com/watch?v={data['id']}",
+        "duration":    data.get("duration", 0),
+        "heatmap":     heatmap,
+        "upload_date": data.get("upload_date", ""),
+    }
+
+
+# =============================================================================
+# Step 2 — Hotspot detection
+# =============================================================================
+
+def find_hotspots(heatmap: list[dict]) -> list[dict]:
+    if not heatmap:
+        return []
+
+    half   = CLIP_DURATION / 2
+    ranked = sorted(heatmap, key=lambda p: p["intensity"], reverse=True)
+    chosen  = []
+    windows = []
+
+    for point in ranked:
+        if len(chosen) >= TOP_N:
+            break
+
+        peak_sec  = (point["start"] + point["end"]) / 2
+        win_start = max(0.0, peak_sec - half)
+        win_end   = win_start + CLIP_DURATION
+
+        if any(not (win_end <= ws or win_start >= we) for ws, we in windows):
+            continue
+
+        chosen.append({
+            "start_sec": win_start,
+            "peak_sec":  peak_sec,
+            "end_sec":   win_end,
+            "intensity": point["intensity"],
+        })
+        windows.append((win_start, win_end))
+
+    return sorted(chosen, key=lambda h: h["start_sec"])
+
+
+# =============================================================================
+# Step 3 — Download hotspot segment
 # =============================================================================
 
 def download_segment(url: str, start: float, duration: int, out: Path) -> bool:
-    """
-    Download only the hotspot window using yt-dlp --download-sections.
-    Much faster than downloading the full episode.
-    """
     section = f"*{ts(start)}-{ts(start + duration)}"
     cmd = [
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
-        "--cookies", "/home/StreamerClipper/clipbot/cookies.txt",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--download-sections", section,
         "--force-keyframes-at-cuts",
         "-o", str(out),
         url,
     ]
-    log.info(f"Downloading segment {ts_label(start)}–{ts_label(start+duration)}...")
+    log.info(f"Downloading {ts_label(start)}–{ts_label(start+duration)}...")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0 or not out.exists():
         log.error(f"yt-dlp download failed: {result.stderr[:400]}")
@@ -129,44 +208,36 @@ def download_segment(url: str, start: float, duration: int, out: Path) -> bool:
 
 
 # =============================================================================
-# Step 2 — Fetch subtitles
+# Step 4 — Fetch subtitles
 # =============================================================================
 
 def fetch_subtitles(url: str, stem: Path) -> Path | None:
-    """
-    Try to fetch auto-generated subtitles in Turkish then English.
-    Returns path to .vtt file if found, else None.
-    """
     for lang in ("tr", "en", "en-US"):
         cmd = [
             "yt-dlp",
             "--no-playlist",
             "--skip-download",
             "--no-warnings",
-        "--cookies", "/home/StreamerClipper/clipbot/cookies.txt",
             "--write-auto-sub",
             "--sub-lang", lang,
             "--sub-format", "vtt",
             "-o", str(stem),
             url,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        # yt-dlp writes stem.lang.vtt
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         candidate = stem.parent / f"{stem.name}.{lang}.vtt"
         if candidate.exists():
             log.info(f"Subtitles fetched: {lang}")
             return candidate
-
     log.warning("No subtitles available")
     return None
 
 
 # =============================================================================
-# Step 3 — Crop to 9:16 (centre crop, no webcam)
+# Step 5 — Crop to 9:16
 # =============================================================================
 
 def get_video_dimensions(path: Path) -> tuple[int, int]:
-    """Reuses same approach as clipper.py."""
     probe = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(path)],
         capture_output=True, text=True,
@@ -179,10 +250,6 @@ def get_video_dimensions(path: Path) -> tuple[int, int]:
 
 
 def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
-    """
-    Soap operas are full-frame 16:9. Centre-crop to 9:16 (608×1080).
-    Matches the fullscreen path in clipper.py's crop_to_vertical().
-    """
     w, h = get_video_dimensions(input_path)
     target_w = int(h * 9 / 16)
     crop_x   = (w - target_w) // 2
@@ -205,15 +272,10 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 
 
 # =============================================================================
-# Step 4 — Burn subtitles
+# Step 6 — Burn subtitles
 # =============================================================================
 
-def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path, sub_offset: float) -> bool:
-    """
-    Burn the VTT subtitles into the video.
-    Uses the same font style as clipper.py's add_captions().
-    sub_offset shifts subtitle timestamps to align with the clip window.
-    """
+def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path) -> bool:
     safe_sub = str(sub_path).replace("\\", "/")
     vf = (
         f"subtitles='{safe_sub}':si=0"
@@ -225,7 +287,6 @@ def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path, sub_offs
     )
     cmd = [
         "ffmpeg", "-y",
-        "-itsoffset", str(-sub_offset),
         "-i", str(input_path),
         "-vf", vf,
         "-c:v", "libx264",
@@ -241,15 +302,10 @@ def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path, sub_offs
 
 
 # =============================================================================
-# Step 5 — Post to Discord for approval (same pattern as publisher.py)
+# Step 7 — Post to Discord for approval
 # =============================================================================
 
 def send_clip_to_discord(clip_path: Path, job: dict, hotspot: dict, clip_index: int) -> str | None:
-    """
-    Upload the clip to Discord for ✅/❌ approval.
-    Returns the Discord message ID or None on failure.
-    Saves to soap_discord_pending.jsonl so discord_bot.py (extended) can pick it up.
-    """
     if not DISCORD_BOT_TOKEN:
         log.error("DISCORD_BOT_TOKEN not set")
         return None
@@ -264,7 +320,7 @@ def send_clip_to_discord(clip_path: Path, job: dict, hotspot: dict, clip_index: 
     )
 
     try:
-        url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages"
+        url = f"https://discord.com/api/v10/channels/{SOAP_CLIPS_CHANNEL_ID}/messages"
         headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
 
         with open(clip_path, "rb") as f:
@@ -283,23 +339,20 @@ def send_clip_to_discord(clip_path: Path, job: dict, hotspot: dict, clip_index: 
         message_id = resp.json()["id"]
         log.info(f"Clip {clip_index+1} sent to Discord — message {message_id}")
 
-        # Add reactions (mirrors publisher.py)
         import time
-        import urllib.parse
         for emoji in ["✅", "❌"]:
             encoded = urllib.parse.quote(emoji)
-            react_url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages/{message_id}/reactions/{encoded}/@me"
+            react_url = f"https://discord.com/api/v10/channels/{SOAP_CLIPS_CHANNEL_ID}/messages/{message_id}/reactions/{encoded}/@me"
             requests.put(react_url, headers=headers, timeout=5)
             time.sleep(0.5)
 
-        # Persist for discord_bot.py to pick up on reaction
         record = {
-            "message_id":  message_id,
-            "clip_path":   str(clip_path),
-            "job":         job,
-            "hotspot":     hotspot,
-            "clip_index":  clip_index,
-            "type":        "soap_short",   # lets discord_bot.py distinguish from Kick clips
+            "message_id": message_id,
+            "clip_path":  str(clip_path),
+            "job":        {k: v for k, v in job.items() if k != "heatmap"},  # heatmap too large
+            "hotspot":    hotspot,
+            "clip_index": clip_index,
+            "type":       "soap_short",
         }
         SOAP_DISCORD_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(SOAP_DISCORD_FILE, "a") as f:
@@ -313,7 +366,7 @@ def send_clip_to_discord(clip_path: Path, job: dict, hotspot: dict, clip_index: 
 
 
 # =============================================================================
-# Process one hotspot → clip
+# Process one hotspot
 # =============================================================================
 
 def process_hotspot(job: dict, hotspot: dict, clip_index: int) -> Path | None:
@@ -325,34 +378,30 @@ def process_hotspot(job: dict, hotspot: dict, clip_index: int) -> Path | None:
     url   = job["url"]
     start = hotspot["start_sec"]
 
-    raw      = TMP_DIR / f"{slug}_raw.mp4"
-    cropped  = TMP_DIR / f"{slug}_cropped.mp4"
-    subbed   = TMP_DIR / f"{slug}_subbed.mp4"
-    final    = CLIPS_DIR / f"{slug}_final.mp4"
+    raw     = TMP_DIR / f"{slug}_raw.mp4"
+    cropped = TMP_DIR / f"{slug}_cropped.mp4"
+    subbed  = TMP_DIR / f"{slug}_subbed.mp4"
+    final   = CLIPS_DIR / f"{slug}_final.mp4"
 
-    # 1. Download segment
     if not download_segment(url, start, CLIP_DURATION, raw):
         return None
 
-    # 2. Fetch subtitles (do once per job, reuse across clips)
-    sub_stem = TMP_DIR / f"soap_{vid}_subs"
-    sub_path = sub_stem.parent / f"{sub_stem.name}.vtt"
+    # Fetch subtitles once per job, reuse across clips
+    sub_path = TMP_DIR / f"soap_{vid}_subs.vtt"
     if not sub_path.exists():
-        fetched = fetch_subtitles(url, sub_stem)
+        fetched = fetch_subtitles(url, TMP_DIR / f"soap_{vid}_subs")
         if fetched:
             fetched.rename(sub_path)
 
-    # 3. Crop 16:9 → 9:16
     if not crop_to_vertical(raw, cropped):
         return None
     raw.unlink(missing_ok=True)
 
-    # 4. Burn subtitles if available
     if sub_path.exists():
-        burn_subtitles(cropped, sub_path, subbed, start)
+        burn_subtitles(cropped, sub_path, subbed)
         cropped.unlink(missing_ok=True)
     else:
-        subbed = cropped   # skip subtitle step cleanly
+        subbed = cropped
 
     shutil.move(str(subbed), str(final))
     log.info(f"Clip ready: {final}")
@@ -369,15 +418,46 @@ def main():
         log.info("No pending soap jobs — nothing to do")
         sys.exit(0)
 
-    log.info(f"Processing: {job['title']} ({len(job['hotspots'])} hotspots)")
+    url = job["url"]
+    log.info(f"Fetching metadata for: {url}")
+
+    meta = fetch_video_metadata(url)
+    if not meta:
+        discord_log(f"❌ **[Soap]** Could not fetch metadata for `{url}`", channel_id=SOAP_LOG_CHANNEL_ID)
+        mark_processed(job, lines)
+        sys.exit(1)
+
+    if not meta["heatmap"]:
+        discord_log(
+            f"⚠️ **[Soap]** No Most Replayed data for *{meta['title']}*\n"
+            f"The video may be too new or have too few views.",
+            channel_id=SOAP_LOG_CHANNEL_ID,
+        )
+        mark_processed(job, lines)
+        sys.exit(0)
+
+    hotspots = find_hotspots(meta["heatmap"])
+    if not hotspots:
+        discord_log(f"⚠️ **[Soap]** No usable hotspots in *{meta['title']}*", channel_id=SOAP_LOG_CHANNEL_ID)
+        mark_processed(job, lines)
+        sys.exit(0)
+
+    job.update(meta)
+    job["hotspots"] = hotspots
+
+    hs_summary = "\n".join(
+        f"  • Clip {i+1}: `{ts_label(h['start_sec'])}` — `{h['intensity']:.0%}` intensity"
+        for i, h in enumerate(hotspots)
+    )
     discord_log(
-        f"⚙️ **[Soap Shorts]** Processing *{job['title']}*\n"
-        f"Generating {len(job['hotspots'])} clips..."
+        f"⚙️ **[Soap]** Processing *{meta['title']}*\n"
+        f"Hotspots:\n{hs_summary}",
+        channel_id=SOAP_LOG_CHANNEL_ID,
     )
 
     clips_sent = 0
-    for i, hotspot in enumerate(job["hotspots"]):
-        log.info(f"--- Hotspot {i+1}/{len(job['hotspots'])} @ {ts_label(hotspot['start_sec'])} ---")
+    for i, hotspot in enumerate(hotspots):
+        log.info(f"--- Hotspot {i+1}/{len(hotspots)} @ {ts_label(hotspot['start_sec'])} ---")
         clip_path = process_hotspot(job, hotspot, i)
         if clip_path:
             msg_id = send_clip_to_discord(clip_path, job, hotspot, i)
@@ -388,9 +468,9 @@ def main():
 
     mark_processed(job, lines)
     discord_log(
-        f"✅ **[Soap Shorts]** Done — {clips_sent}/{len(job['hotspots'])} clips sent for approval."
+        f"✅ **[Soap]** Done — {clips_sent}/{len(hotspots)} clips sent for approval.",
+        channel_id=SOAP_LOG_CHANNEL_ID,
     )
-    log.info(f"Done — {clips_sent} clips sent to Discord")
 
 
 if __name__ == "__main__":
