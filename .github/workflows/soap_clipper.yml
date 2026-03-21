@@ -34,6 +34,9 @@ jobs:
       - name: Write cookies file
         run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
+      - name: Debug formats
+        run: yt-dlp --cookies cookies.txt --list-formats "https://www.youtube.com/watch?v=_bQaK14Cavs"
+
       - name: Run soap clipper
         env:
           DISCORD_BOT_TOKEN:     ${{ secrets.DISCORD_BOT_TOKEN }}
