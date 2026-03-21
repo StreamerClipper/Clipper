@@ -31,6 +31,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests python-dotenv google-api-python-client google-auth-oauthlib
 
+    - name: Write cookies file
+        run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+
       - name: Run soap clipper
         env:
           DISCORD_BOT_TOKEN:     ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -38,6 +41,7 @@ jobs:
           YOUTUBE_CLIENT_ID:     ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_COOKIES:          ${{ secrets.YOUTUBE_COOKIES }}
           ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
         run: python -m agents.soap_clipper
 
