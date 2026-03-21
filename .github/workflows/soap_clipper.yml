@@ -1,12 +1,9 @@
 name: Soap Shorts Clipper
 
-# Triggers when soap_scout.py pushes a new soap_pending.jsonl entry to the repo
 on:
   push:
     paths:
       - "output/soap_pending.jsonl"
-
-  # Also allows manual trigger from GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -22,29 +19,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies
+      - name: Install yt-dlp
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
-          pip install yt-dlp streamlink requests google-api-python-client \
-                      google-auth-oauthlib python-dotenv
+          sudo curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Install project dependencies
-        run: pip install -r requirements.txt
+      - name: Install system dependencies
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install requests python-dotenv google-api-python-client google-auth-oauthlib
 
       - name: Run soap clipper
         env:
-          DISCORD_BOT_TOKEN:      ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCORD_CHANNEL_ID:     ${{ secrets.DISCORD_CHANNEL_ID }}
-          YOUTUBE_CLIENT_ID:      ${{ secrets.YOUTUBE_CLIENT_ID }}
-          YOUTUBE_CLIENT_SECRET:  ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-          YOUTUBE_REFRESH_TOKEN:  ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python -m agents.soap_clipper
+          DISCORD_BOT_TOKEN:     ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID:    ${{ secrets.DISCORD_CHANNEL_ID }}
+          YOUTUBE_CLIENT_ID:     ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m agents.soap_clipper
 
-      # Commit processed jobs and clip output back to repo
-      # (mirrors how the existing Clipper workflow works)
       - name: Commit results
         run: |
           git config user.name  "github-actions[bot]"
