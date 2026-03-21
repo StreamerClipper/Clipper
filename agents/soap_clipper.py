@@ -37,7 +37,7 @@ SOAP_DISCORD_FILE   = Path("output/soap_discord_pending.jsonl")
 CLIPS_DIR           = Path("output/clips")
 TMP_DIR             = Path("/tmp/soap_clipper")
 
-CLIP_DURATION = 30
+CLIP_DURATION = 45
 TOP_N         = 3
 OUT_W, OUT_H  = 608, 1080
 
@@ -278,10 +278,10 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 # Step 6 — Burn subtitles
 # =============================================================================
 
-def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path) -> bool:
+def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path, start_sec: float = 0) -> bool:
     safe_sub = str(sub_path).replace("\\", "/")
     vf = (
-        f"subtitles='{safe_sub}':si=0"
+        f"subtitles='{safe_sub}':si=0:seek_point={start_sec}"
         f":force_style='FontName=LuckiestGuy-Regular,"
         f"FontSize=20,Bold=1,"
         f"PrimaryColour=&H00FFFFFF,"
@@ -401,7 +401,7 @@ def process_hotspot(job: dict, hotspot: dict, clip_index: int) -> Path | None:
     raw.unlink(missing_ok=True)
 
     if sub_path.exists():
-        burn_subtitles(cropped, sub_path, subbed)
+        burn_subtitles(cropped, sub_path, subbed, start)
         cropped.unlink(missing_ok=True)
     else:
         subbed = cropped
