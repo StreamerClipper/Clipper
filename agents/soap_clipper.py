@@ -281,15 +281,15 @@ def crop_to_vertical(input_path: Path, output_path: Path) -> bool:
 def burn_subtitles(input_path: Path, sub_path: Path, output_path: Path, start_sec: float = 0) -> bool:
     safe_sub = str(sub_path).replace("\\", "/")
     vf = (
-        f"subtitles='{safe_sub}':si=0:seek_point={start_sec}"
-        f":force_style='FontName=LuckiestGuy-Regular,"
-        f"FontSize=20,Bold=1,"
+        f"subtitles='{safe_sub}':si=0"
+        f":force_style='FontSize=18,Bold=1,"
         f"PrimaryColour=&H00FFFFFF,"
         f"OutlineColour=&H00000000,"
-        f"Outline=2,Shadow=1,MarginV=160'"
+        f"Outline=2,Shadow=1,MarginV=100'"
     )
     cmd = [
         "ffmpeg", "-y",
+        "-ss", str(start_sec),
         "-i", str(input_path),
         "-vf", vf,
         "-c:v", "libx264",
