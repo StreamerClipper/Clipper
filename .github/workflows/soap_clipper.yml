@@ -24,12 +24,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Link node for yt-dlp
+      - name: Install yt-dlp
         run: |
-          NODE_PATH=$(which node)
-          echo "Node path: $NODE_PATH"
-          sudo ln -sf $NODE_PATH /usr/local/bin/node || true
-          yt-dlp --update-to nightly
+          pip install yt-dlp[default]
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Link node for yt-dlp
+        run: sudo ln -sf $(which node) /usr/local/bin/node
 
       - name: Install ffmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
@@ -42,9 +43,8 @@ jobs:
 
       - name: Debug yt-dlp node
         run: |
-          which node
+          node --version
           yt-dlp --verbose --cookies cookies.txt \
-            --extractor-args "youtube:player_client=web" \
             --list-formats "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i "node\|runtime\|challenge\|format"
 
       - name: Run soap clipper
