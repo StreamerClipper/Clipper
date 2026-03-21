@@ -25,7 +25,7 @@ jobs:
           node-version: "20"
 
       - name: Install yt-dlp JS solver
-        run: npm install -g yt-dlp-ejs
+        run: npm install -g @yt-dlp/yt-dlp-js
 
       - name: Install yt-dlp
         run: |
