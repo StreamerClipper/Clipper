@@ -247,6 +247,38 @@ class ApprovalBot(discord.Client):
                 )
                 return
 
+            if content == "ret":
+                pending_file = Path("output/soap_pending.jsonl")
+                processed_file = Path("output/soap_processed.jsonl")
+
+                # Find the last URL — check pending first, then processed
+                last_url = None
+
+                if processed_file.exists():
+                    lines = [l for l in processed_file.read_text().strip().splitlines() if l.strip()]
+                    if lines:
+                        last_url = json.loads(lines[-1]).get("url")
+
+                if not last_url and pending_file.exists():
+                    lines = [l for l in pending_file.read_text().strip().splitlines() if l.strip()]
+                    if lines:
+                        last_url = json.loads(lines[-1]).get("url")
+
+                if not last_url:
+                    await message.channel.send("❌ No previous URL found to retry.")
+                    return
+
+                await message.channel.send(f"🔄 Retrying last URL:\n`{last_url}`\n⏳ Queuing...")
+                import subprocess
+                subprocess.Popen(
+                    [sys.executable, "-m", "agents.soap_scout", "--url", last_url],
+                    cwd=Path(".").resolve(),
+                )
+                await message.channel.send(
+                    "📋 Re-queued — clips will appear in <#1484834736257106020> once processed."
+                )
+                return
+
             if content == "!soap status":
                 pending_file = Path("output/soap_pending.jsonl")
                 disc_file    = Path("output/soap_discord_pending.jsonl")
@@ -510,14 +542,28 @@ class ApprovalBot(discord.Client):
 
 
 def main():
+    # Prevent multiple instances
+    pid_file = Path("/tmp/discord_bot.pid")
+    if pid_file.exists():
+        old_pid = pid_file.read_text().strip()
+        try:
+            os.kill(int(old_pid), 0)  # check if process is still running
+            log.error(f"Bot already running (PID {old_pid}) — exiting")
+            return
+        except (OSError, ValueError):
+            pass  # process is dead, continue
+    pid_file.write_text(str(os.getpid()))
+
     token = settings.DISCORD_BOT_TOKEN
     if not token:
         log.error("DISCORD_BOT_TOKEN not set in .env")
         return
-
     log.info("Starting Discord approval bot...")
-    bot = ApprovalBot()
-    bot.run(token, log_handler=None)
+    try:
+        bot = ApprovalBot()
+        bot.run(token, log_handler=None)
+    finally:
+        pid_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
