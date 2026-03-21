@@ -39,6 +39,11 @@ POLL_INTERVAL = int(os.getenv("SOAP_POLL_INTERVAL", 3600))   # 1 hour default
 SOAP_PENDING_FILE = Path("output/soap_pending.jsonl")
 SOAP_SEEN_FILE    = Path("output/soap_seen.json")            # tracks already-processed video IDs
 
+# Soap-specific Discord channels
+SOAP_CLIPS_CHANNEL_ID = "1484834736257106020"
+SOAP_LOG_CHANNEL_ID   = "1484834748181385256"
+SOAP_INPUT_CHANNEL_ID = "1484842601617293394"
+
 
 # =============================================================================
 # Discord logging (mirrors discord_log() in scout.py)
@@ -48,7 +53,7 @@ def discord_log(message: str, channel_id: str = None):
     token = settings.DISCORD_BOT_TOKEN
     if not token:
         return
-    cid = channel_id or DISCORD_CHANNEL_ID
+    cid = channel_id or SOAP_LOG_CHANNEL_ID
     try:
         requests.post(
             f"https://discord.com/api/v10/channels/{cid}/messages",
