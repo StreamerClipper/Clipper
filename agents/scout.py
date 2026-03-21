@@ -81,6 +81,7 @@ def discord_log(message: str):
     except Exception:
         pass
 
+
 def scout_log(message: str):
     token = settings.DISCORD_BOT_TOKEN
     if not token:
@@ -94,6 +95,7 @@ def scout_log(message: str):
         )
     except Exception:
         pass
+
 
 # =============================================================================
 # Kick API
@@ -231,10 +233,10 @@ class RollingBuffer:
     def get_buffered_segments(self) -> list[Path]:
         now = time.time()
         segments = sorted(self.buffer_dir.glob("seg_*.ts"))
-        # Keep only segments written in the last 60 seconds and over 1MB
+        # Keep only segments written in the last 120 seconds and over 1MB
         return [s for s in segments
                 if s.stat().st_size > 1_000_000
-                and (now - s.stat().st_mtime) < 60]
+                and (now - s.stat().st_mtime) < 120]
 
     def extract_clip(self, timestamp: str) -> Path | None:
         segments = self.get_buffered_segments()
@@ -271,9 +273,9 @@ class RollingBuffer:
             return None
 
         log.info(f"[{self.channel}] Buffer stitched: {output_path.name} ({size/1024/1024:.1f}MB)")
+
         # Detailed clip info for scout-log
         total_duration = len(segments) * SEGMENT_DURATION
-        now = time.time()
         seg_details = "\n".join(
             f"  • {s.name} | {s.stat().st_size/1024/1024:.1f}MB | "
             f"recorded ~{datetime.fromtimestamp(s.stat().st_mtime).strftime('%H:%M:%S')} UTC"
@@ -313,7 +315,7 @@ class RollingBuffer:
             )
             self._death_count = 0
             log.info(f"[{self.channel}] Buffer started (PID {self._process.pid})")
-            scout_log(f"✅ **#{self.channel}** buffer restarted")
+            scout_log(f"✅ **#{self.channel}** buffer started")
 
         except Exception as e:
             log.error(f"[{self.channel}] Failed to start buffer: {e}")
@@ -346,6 +348,9 @@ class RollingBuffer:
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
+                    self._death_count = 0
+                    log.info(f"[{self.channel}] Buffer restarted")
+                    scout_log(f"✅ **#{self.channel}** buffer restarted")
                 else:
                     await asyncio.sleep(30)
 
@@ -446,6 +451,7 @@ class KickChatScout:
         self._stream_id: str | None = None
         self._moments: list[HypeMoment] = []
         self._building_alerted = False
+        self._processing = False
 
         Path(settings.LOGS_DIR).mkdir(parents=True, exist_ok=True)
         self._local_log = Path(settings.LOGS_DIR) / f"{channel_slug}_moments.jsonl"
@@ -536,7 +542,9 @@ class KickChatScout:
         manual_triggered = any(kw in content_lower for kw in MANUAL_TRIGGERS)
 
         if manual_triggered or self.detector.should_trigger(rate, now):
-            # Lock cooldown IMMEDIATELY before any async sleep
+            if self._processing:
+                return
+            self._processing = True
             self.detector._last_trigger = datetime.now(timezone.utc)
             offset = self._offset(now)
             moment = self.detector.trigger(
@@ -567,12 +575,9 @@ class KickChatScout:
                 f"Buffer: `{buf_segments * SEGMENT_DURATION}s` captured\n"
                 f"💬 Last 3:\n{discord_msgs}"
             )
-
             await asyncio.sleep(CLIP_AFTER_PEAK)
-
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             clip_path = self.buffer.extract_clip(timestamp)
-
             moment_dict = moment.to_dict()
             if clip_path:
                 moment_dict["local_clip_path"] = str(clip_path)
@@ -582,8 +587,8 @@ class KickChatScout:
                 scout_log(f"⚠️ **#{self.channel_slug}** buffer empty on trigger — live recording fallback")
             with open(self._local_log, "a") as f:
                 f.write(json.dumps(moment_dict) + "\n")
-
             await push_moment_to_github(moment_dict, session)
+            self._processing = False
 
     def cleanup(self):
         self.buffer.stop()
@@ -605,7 +610,7 @@ async def run_channel(channel: str):
         except Exception as e:
             log.warning(f"[{channel}] Scout crashed: {e} — reconnecting in 30s...")
             discord_log(f"⚠️ **#{channel} scout crashed** — reconnecting in 30s...\n`{e}`")
-            scout_log(f"🟢 **#{self.channel}** connected — buffer active")
+            scout_log(f"⚠️ **#{channel}** scout crashed — reconnecting in 30s...")
             scout.cleanup()
 
         await asyncio.sleep(30)
