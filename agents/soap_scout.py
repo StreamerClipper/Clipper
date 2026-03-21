@@ -38,7 +38,6 @@ logging.basicConfig(
 POLL_INTERVAL = int(os.getenv("SOAP_POLL_INTERVAL", 3600))   # 1 hour default
 SOAP_PENDING_FILE = Path("output/soap_pending.jsonl")
 SOAP_SEEN_FILE    = Path("output/soap_seen.json")            # tracks already-processed video IDs
-DISCORD_CHANNEL_ID = settings.DISCORD_CHANNEL_ID
 
 
 # =============================================================================
@@ -232,7 +231,7 @@ def process_url(url: str) -> bool:
     log.info(f"Fetching metadata for: {url}")
     meta = fetch_video_metadata(url)
     if not meta:
-        discord_log(f"❌ **[Soap]** Could not fetch metadata for `{url}`")
+        discord_log(f"❌ **[Soap]** Could not fetch metadata for `{url}`", channel_id=SOAP_LOG_CHANNEL_ID)
         return False
 
     if not meta["heatmap"]:
@@ -244,7 +243,7 @@ def process_url(url: str) -> bool:
 
     hotspots = find_hotspots(meta["heatmap"])
     if not hotspots:
-        discord_log(f"⚠️ **[Soap]** No usable hotspots found in *{meta['title']}*")
+        discord_log(f"⚠️ **[Soap]** No usable hotspots found in *{meta['title']}*", channel_id=SOAP_LOG_CHANNEL_ID)
         return False
 
     enqueue_job(meta, hotspots)
@@ -268,8 +267,7 @@ def process_url(url: str) -> bool:
 
 def poll_playlist(playlist_url: str):
     log.info(f"Polling playlist: {playlist_url} every {POLL_INTERVAL}s")
-    discord_log(f"📡 **[Soap Scout]** Started — polling playlist every {POLL_INTERVAL//3600}h")
-
+    discord_log(f"📡 **[Soap Scout]** Started — polling playlist every {POLL_INTERVAL//3600}h", channel_id=SOAP_LOG_CHANNEL_ID)
     while True:
         seen = load_seen()
         entries = fetch_playlist_entries(playlist_url, max_entries=5)
