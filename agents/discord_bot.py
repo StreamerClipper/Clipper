@@ -31,6 +31,11 @@ log = logging.getLogger("discord_bot")
 
 APPROVE = "✅"
 REJECT  = "❌"
+
+SOAP_INPUT_CHANNEL_ID = 1484842601617293394   # you paste URLs here
+SOAP_LOG_CHANNEL_ID   = 1484834748181385256   # pipeline status / progress
+SOAP_CLIPS_CHANNEL_ID = 1484834736257106020   # clip approvals (✅ / ❌)
+
 TITLE_TIMEOUT = 86400  # 24h
 
 # Tracks pending clips: message_id -> metadata dict
@@ -215,13 +220,61 @@ class ApprovalBot(discord.Client):
             log.error(f"Channel {self.channel_id} not found — check DISCORD_CHANNEL_ID")
 
     async def on_message(self, message: discord.Message):
-        """Handle !hype commands to adjust detection settings."""
+        """Handle !hype and !soap commands."""
         if message.author.bot:
-            return
-        if message.channel.id != self.channel_id:
             return
 
         content = message.content.strip()
+
+        # ── Soap commands (separate input channel) ────────────────────────────
+        if message.channel.id == SOAP_INPUT_CHANNEL_ID:
+            if content.startswith("!soap clip "):
+                url = content[len("!soap clip "):].strip()
+                if not url.startswith("http"):
+                    await message.channel.send("❌ Usage: `!soap clip https://www.youtube.com/watch?v=...`")
+                    return
+                await message.channel.send(
+                    f"🔍 Analysing Most Replayed data for:\n`{url}`\n⏳ This takes ~30 seconds..."
+                )
+                import subprocess
+                subprocess.Popen(
+                    [sys.executable, "-m", "agents.soap_scout", "--url", url],
+                    cwd=Path(".").resolve(),
+                )
+                await message.channel.send(
+                    "📋 Episode queued — clips will appear in <#1484834736257106020> for approval.\n"
+                    "*(Processing takes 2–5 minutes in GitHub Actions)*"
+                )
+                return
+
+            if content == "!soap status":
+                pending_file = Path("output/soap_pending.jsonl")
+                disc_file    = Path("output/soap_discord_pending.jsonl")
+                pending_n  = len([l for l in pending_file.read_text().splitlines() if l.strip()]) if pending_file.exists() else 0
+                approval_n = len([l for l in disc_file.read_text().splitlines() if l.strip()]) if disc_file.exists() else 0
+                await message.channel.send(
+                    f"📺 **Soap Shorts Status**\n"
+                    f"`{pending_n}` episode(s) queued for clipping\n"
+                    f"`{approval_n}` clip(s) awaiting approval in <#1484834736257106020>"
+                )
+                return
+
+            if content in ("!soap", "!soap help"):
+                await message.channel.send(
+                    "**Soap Shorts Commands:**\n"
+                    "`!soap clip <youtube-url>` — queue an episode for clipping\n"
+                    "`!soap status` — show pending jobs\n\n"
+                    "Clips appear in <#1484834736257106020> with ✅/❌ buttons.\n"
+                    "✅ uploads to YouTube Shorts · ❌ discards"
+                )
+                return
+
+            return  # ignore anything else in the soap input channel
+        # ── End soap commands ─────────────────────────────────────────────────
+
+        # Existing Kick bot channel guard
+        if message.channel.id != self.channel_id:
+            return
 
         # !hype status — show current settings
         if content == "!hype status":
@@ -257,10 +310,9 @@ class ApprovalBot(discord.Client):
                 return
 
             if not value.isdigit():
-                await message.channel.send(f"❌ Value must be a number")
+                await message.channel.send("❌ Value must be a number")
                 return
 
-            # Update .env file
             env_path = Path(".env")
             lines = env_path.read_text().splitlines()
             updated = False
@@ -290,6 +342,7 @@ class ApprovalBot(discord.Client):
                 "`!hype set HYPE_WINDOW_SECONDS 10` — change window\n"
                 "`!hype set HYPE_COOLDOWN_SECONDS 120` — change cooldown"
             )
+
         # !restart — restart the discord bot process
         if content == "!restart":
             await message.channel.send("🔄 Restarting bot...")
@@ -310,14 +363,76 @@ class ApprovalBot(discord.Client):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         log.debug(f"Reaction: {payload.emoji} from {payload.user_id} on {payload.message_id}")
 
+        # ── Soap clip approval (separate clips channel) ───────────────────────
+        if payload.channel_id == SOAP_CLIPS_CHANNEL_ID:
+            if payload.user_id == self.user.id:
+                return
+            if self.owner_id and payload.user_id != self.owner_id:
+                return
+
+            emoji = str(payload.emoji)
+            if emoji not in (APPROVE, REJECT):
+                return
+
+            message_id  = payload.message_id
+            soap_record = None
+            soap_path   = Path("output/soap_discord_pending.jsonl")
+
+            if soap_path.exists():
+                for line in soap_path.read_text().strip().splitlines():
+                    try:
+                        item = json.loads(line)
+                        if str(item.get("message_id")) == str(message_id):
+                            soap_record = item
+                            break
+                    except Exception:
+                        pass
+
+            if not soap_record:
+                return
+
+            clips_channel = self.get_channel(SOAP_CLIPS_CHANNEL_ID)
+            log_channel   = self.get_channel(SOAP_LOG_CHANNEL_ID)
+            message_obj   = await clips_channel.fetch_message(message_id)
+
+            if emoji == REJECT:
+                Path(soap_record.get("clip_path", "")).unlink(missing_ok=True)
+                await message_obj.reply("❌ Soap clip discarded.")
+                await asyncio.sleep(3)
+                await message_obj.delete()
+                if log_channel:
+                    await log_channel.send(f"🗑️ Soap clip {soap_record.get('clip_index', 0)+1} discarded.")
+
+            elif emoji == APPROVE:
+                await message_obj.reply("⏳ Uploading to YouTube Shorts...")
+                try:
+                    from agents.soap_uploader import handle_approval
+                    yt_url = await asyncio.get_event_loop().run_in_executor(
+                        None, handle_approval, soap_record
+                    )
+                    if yt_url:
+                        await clips_channel.send(f"🎬 **Soap Short uploaded!** {yt_url}")
+                        if log_channel:
+                            await log_channel.send(f"✅ Clip {soap_record.get('clip_index', 0)+1} uploaded: {yt_url}")
+                    else:
+                        await clips_channel.send("❌ YouTube upload failed — check logs.")
+                except Exception as e:
+                    await clips_channel.send(f"❌ Upload error: `{e}`")
+
+            # Remove from soap pending file
+            remaining = [
+                l for l in soap_path.read_text().strip().splitlines()
+                if l.strip() and str(message_id) not in l
+            ]
+            soap_path.write_text("\n".join(remaining) + "\n" if remaining else "")
+            return  # do NOT fall through to Kick clip handling
+        # ── End soap reaction block ───────────────────────────────────────────
+
+        # Existing Kick clip handling below — unchanged
         if payload.channel_id != self.channel_id:
             return
-
-        # Ignore bot's own reactions
         if payload.user_id == self.user.id:
             return
-
-        # Only owner
         if self.owner_id and payload.user_id != self.owner_id:
             return
 
@@ -332,7 +447,6 @@ class ApprovalBot(discord.Client):
         log.info(f"DEBUG record keys: {list(record.keys()) if record else 'NONE'}")
 
         if not record:
-            # Bot restarted — look up in discord_pending.jsonl
             pending_path = Path("output/discord_pending.jsonl")
             if pending_path.exists():
                 for line in pending_path.read_text().strip().splitlines():
@@ -356,6 +470,7 @@ class ApprovalBot(discord.Client):
         moment_data = record.get("moment", {})
         meta["channel"] = meta.get("channel") or moment_data.get("channel", "streamer")
         meta["trigger_messages"] = meta.get("trigger_messages") or moment_data.get("trigger_messages", [])
+
         channel = self.get_channel(self.channel_id)
         message = await channel.fetch_message(message_id)
 
@@ -368,12 +483,9 @@ class ApprovalBot(discord.Client):
 
         if emoji == APPROVE:
             log.info("Clip approved — generating title suggestions...")
-
             channel_name = meta.get("channel", "streamer")
             trigger_messages = meta.get("trigger_messages", [])
             suggestions = generate_title_suggestions(channel_name, trigger_messages)
-
-            # Post title suggestions
             suggestion_text = (
                 "✅ **Approved!** Choose a title:\n\n"
                 f"**1.** {suggestions[0]}\n"
@@ -383,8 +495,6 @@ class ApprovalBot(discord.Client):
                 "*(Auto-selects option 1 in 5 minutes)*"
             )
             suggestion_msg = await message.reply(suggestion_text)
-
-            # Wait for title selection in background
             asyncio.create_task(
                 wait_for_title(self, channel, suggestion_msg, suggestions, meta)
             )
