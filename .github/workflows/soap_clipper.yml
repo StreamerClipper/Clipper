@@ -39,8 +39,10 @@ jobs:
       - name: Write cookies file
         run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
-      - name: Debug formats
-        run: yt-dlp --cookies cookies.txt --list-formats "https://www.youtube.com/watch?v=_bQaK14Cavs"
+      - name: Debug yt-dlp node
+        run: |
+          node --version
+          yt-dlp --verbose --cookies cookies.txt --list-formats "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i "node\|runtime\|challenge\|format"
 
       - name: Run soap clipper
         env:
