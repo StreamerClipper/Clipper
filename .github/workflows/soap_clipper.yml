@@ -24,14 +24,8 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install yt-dlp JS solver
-        run: npm install -g @yt-dlp/yt-dlp-js
-
       - name: Install yt-dlp
-        run: |
-          sudo curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-            -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
+        run: pip install yt-dlp[default]
 
       - name: Install ffmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
