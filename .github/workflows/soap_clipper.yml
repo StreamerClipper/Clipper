@@ -24,6 +24,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install yt-dlp JS solver
+        run: npm install -g yt-dlp-ejs
+
       - name: Install yt-dlp
         run: |
           sudo curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
