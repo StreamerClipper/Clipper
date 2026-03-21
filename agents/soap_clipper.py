@@ -115,6 +115,7 @@ def fetch_video_metadata(url: str) -> dict | None:
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
+        "--cookies", "cookies.txt",
         url,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -192,6 +193,7 @@ def download_segment(url: str, start: float, duration: int, out: Path) -> bool:
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
+        "--cookies", "cookies.txt",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--download-sections", section,
         "--force-keyframes-at-cuts",
@@ -218,6 +220,7 @@ def fetch_subtitles(url: str, stem: Path) -> Path | None:
             "--no-playlist",
             "--skip-download",
             "--no-warnings",
+            "--cookies", "cookies.txt",
             "--write-auto-sub",
             "--sub-lang", lang,
             "--sub-format", "vtt",
