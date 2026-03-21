@@ -1,0 +1,55 @@
+name: Soap Shorts Clipper
+
+# Triggers when soap_scout.py pushes a new soap_pending.jsonl entry to the repo
+on:
+  push:
+    paths:
+      - "output/soap_pending.jsonl"
+
+  # Also allows manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp streamlink requests google-api-python-client \
+                      google-auth-oauthlib python-dotenv
+
+      - name: Install project dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run soap clipper
+        env:
+          DISCORD_BOT_TOKEN:      ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID:     ${{ secrets.DISCORD_CHANNEL_ID }}
+          YOUTUBE_CLIENT_ID:      ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET:  ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN:  ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -m agents.soap_clipper
+
+      # Commit processed jobs and clip output back to repo
+      # (mirrors how the existing Clipper workflow works)
+      - name: Commit results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/soap_pending.jsonl output/soap_processed.jsonl \
+                  output/soap_discord_pending.jsonl output/clips/ || true
+          git diff --staged --quiet || git commit -m "[soap-clipper] processed clips"
+          git push
