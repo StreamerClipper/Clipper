@@ -29,8 +29,10 @@ jobs:
           pip install yt-dlp[default]
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Link node for yt-dlp
-        run: sudo ln -sf $(which node) /usr/local/bin/node
+      - name: Configure yt-dlp to use node
+        run: |
+          mkdir -p ~/.config/yt-dlp
+          echo "--js-runtimes node" > ~/.config/yt-dlp/config
 
       - name: Install ffmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
