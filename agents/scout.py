@@ -215,6 +215,7 @@ class RollingBuffer:
         self.buffer_dir.mkdir(parents=True, exist_ok=True)
         self._process = None
         self._running = False
+        self._death_count = 0
         self._hls_url: str | None = None
         # Clear any stale segments from previous session
         for seg in self.buffer_dir.glob("seg_*.ts"):
@@ -310,8 +311,9 @@ class RollingBuffer:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            self._death_count = 0
             log.info(f"[{self.channel}] Buffer started (PID {self._process.pid})")
-            scout_log(f"✅ **#{self.channel}** buffer started")
+            scout_log(f"✅ **#{self.channel}** buffer restarted")
 
         except Exception as e:
             log.error(f"[{self.channel}] Failed to start buffer: {e}")
@@ -325,8 +327,12 @@ class RollingBuffer:
                 log.debug(f"[{self.channel}] Buffer: {len(segs)} segments")
 
             if self._process and self._process.returncode is not None:
+                self._death_count += 1
                 log.warning(f"[{self.channel}] Buffer process died — refreshing HLS URL")
-                scout_log(f"⚠️ **#{self.channel}** buffer died — refreshing HLS URL...")
+                if self._death_count <= 3:
+                    scout_log(f"⚠️ **#{self.channel}** buffer died — refreshing HLS URL...")
+                elif self._death_count == 4:
+                    scout_log(f"🔇 **#{self.channel}** buffer keeps dying — silencing further alerts")
                 new_url = await asyncio.get_running_loop().run_in_executor(
                     None, get_hls_url, self.channel
                 )
