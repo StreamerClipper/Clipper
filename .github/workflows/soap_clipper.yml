@@ -25,9 +25,8 @@ jobs:
             -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y --fix-missing ffmpeg
-
+      - name: Install ffmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
 
       - name: Install Python dependencies
         run: pip install requests python-dotenv google-api-python-client google-auth-oauthlib
