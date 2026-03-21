@@ -92,6 +92,7 @@ def fetch_playlist_entries(playlist_url: str, max_entries: int = 5) -> list[dict
         "--flat-playlist",
         "--playlist-end", str(max_entries),
         "--no-warnings",
+        "--cookies", "/home/StreamerClipper/clipbot/cookies.txt",
         playlist_url,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -125,6 +126,7 @@ def fetch_video_metadata(url: str) -> dict | None:
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
+        "--cookies", "/home/StreamerClipper/clipbot/cookies.txt",
         url,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
